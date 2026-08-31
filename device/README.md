@@ -23,9 +23,63 @@ Stage all of it on the device first, from the repo root:
 scp device/journal-net-guard.sh device/journal-net-guard.service device/journal-net-guard.timer device/011_journal-hotspot device/profile walker@192.168.1.246:/tmp/
 ```
 
+### 0. Delete the duplicate `journal-ap` profile — do this first
+
+The device has (had) **two** connection profiles both named `journal-ap`:
+
+| UUID | mode | ipv4 | what it is |
+|------|------|------|------------|
+| `a154f5df-…` | `infrastructure` | auto | a **client** trying to join a network called journal-ap |
+| `077c4e8c-…` | `ap` | shared → 10.42.0.1 | the real access point |
+
+`nmcli connection show journal-ap` resolves to the first one. So
+`nmcli connection up journal-ap` — what `wifi-fallback.service` ran, and what
+the app's Hotspot item runs — activated a client profile hunting for a network
+that does not exist. The access point never came up. This is very likely the
+real reason AP mode never worked away from home, independent of the timing and
+connection-state problems.
+
+Check what is there now:
+
+```bash
+nmcli -t -f NAME,UUID,TYPE connection show | grep journal-ap
+```
+
+If two are listed, confirm which is the client before removing anything:
+
+```bash
+nmcli -t -f connection.uuid,802-11-wireless.mode connection show journal-ap
+```
+
+Delete the one reporting `infrastructure`, by UUID, not by name:
+
+```bash
+sudo nmcli connection delete a154f5df-b243-4514-909b-00a27227afe4
+```
+
+Then confirm the name now resolves to the AP-mode profile:
+
+```bash
+nmcli -t -f connection.uuid,802-11-wireless.mode,ipv4.method connection show journal-ap
+```
+
+It must say `ap` and `shared`. The Hotspot menu item in `journal.py` depends on
+this, because its sudoers rule pins the literal command `nmcli connection up
+journal-ap` and so cannot address the profile by UUID. `journal-net-guard.sh`
+resolves by mode and is safe either way.
+
 ### 1. The reachability guard
 
 Additive — it does not change how you log in, so this is safe to do first.
+
+`iw` is not installed on the device, and the guard uses it to count clients
+attached to the AP. Without it the guard assumes a client is always present, so
+it will never hand back to the house network — safe, but it means arriving home
+still needs a reboot. Install it:
+
+```bash
+sudo apt install -y iw
+```
 
 ```bash
 sudo install -m 755 -o root -g root /tmp/journal-net-guard.sh /usr/local/bin/journal-net-guard.sh

@@ -128,7 +128,22 @@ See open problems — a replacement is written but not yet verified on hardware.
 The whole portability premise depends on this and it has never worked outside.
 Tested at a café: the access point either never came up or was not reachable.
 
-Suspected causes, unverified:
+**Root cause found, 31 August 2026: there are two connection profiles both
+named `journal-ap`.**
+
+| UUID | mode | ipv4 | what it is |
+|------|------|------|------------|
+| `a154f5df-…` | `infrastructure` | auto | a client trying to *join* a network called journal-ap |
+| `077c4e8c-…` | `ap` | shared → 10.42.0.1 | the real access point |
+
+`nmcli connection show journal-ap` resolves to the first. So `nmcli connection
+up journal-ap` — exactly what `wifi-fallback.service` ran — activated a client
+profile hunting for a network that does not exist, and the access point never
+came up. Neither profile has ever successfully connected (`TIMESTAMP-REAL:
+never` on both), which is consistent with this having been broken from the
+start. Removal instructions are in `device/README.md`.
+
+The other suspected causes still stand and are worth fixing regardless:
 
 - The check `nmcli -t -f DEVICE,STATE device | grep -q "^wlan0:connected"`
   returns true for an association with no usable IP. A half-connected state
@@ -136,6 +151,9 @@ Suspected causes, unverified:
 - 45 seconds may be too short — NetworkManager scans for known networks first.
 - One-shot at boot with no retry, so a single failure is permanent until reboot.
 - The phone may auto-join a nearby café network and drop `journal-ap`.
+- `iw` is not installed, so the guard cannot count AP clients. It fails safe
+  (assumes a client is attached) but will therefore never hand back to the house
+  network until `iw` is installed.
 
 **A replacement is written, in `device/journal-net-guard.sh` plus a systemd
 timer. It has not been run on the device.** It differs from the original in four

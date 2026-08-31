@@ -56,13 +56,42 @@ ap_age() {
     echo $(( $(date +%s) - $(cat "$AP_STAMP" 2>/dev/null || echo 0) ))
 }
 
+# Resolve to a profile that is genuinely in AP mode.
+#
+# The device had two connection profiles both named journal-ap: the real
+# access point, and an infrastructure (client) profile trying to *join* a
+# network called journal-ap, which does not exist. `nmcli connection up
+# journal-ap` resolved to the client one, so the access point never came up.
+# That is almost certainly why AP mode never worked away from home.
+#
+# Deleting the duplicate fixes it, but resolving by mode means the same
+# mistake cannot silently come back.
+ap_profile() {
+    local uuid mode
+    for uuid in $(nmcli -t -f UUID,NAME connection show 2>/dev/null \
+        | awk -F: -v want="$AP" '$2 == want { print $1 }'); do
+        mode=$(nmcli -t -f 802-11-wireless.mode connection show "$uuid" 2>/dev/null \
+            | cut -d: -f2)
+        if [ "$mode" = "ap" ]; then
+            printf '%s\n' "$uuid"
+            return 0
+        fi
+    done
+    return 1
+}
+
 start_ap() {
-    if nmcli connection up "$AP" >/dev/null 2>&1; then
+    local uuid
+    uuid=$(ap_profile) || {
+        log "no connection profile named $AP is in AP mode -- cannot start it"
+        return 1
+    }
+    if nmcli connection up "$uuid" >/dev/null 2>&1; then
         date +%s > "$AP_STAMP"
-        log "access point up, reachable at 10.42.0.1"
+        log "access point up ($uuid), reachable at 10.42.0.1"
         return 0
     fi
-    log "failed to start access point $AP"
+    log "failed to start access point $AP ($uuid)"
     return 1
 }
 
@@ -89,7 +118,7 @@ if ap_active; then
     # The Pi's radio cannot scan while running an AP, so the only way to look
     # for a known network is to drop the AP briefly. Safe: nobody is on it.
     log "AP idle for $(ap_age)s, checking for a known network"
-    nmcli connection down "$AP" >/dev/null 2>&1 || true
+    nmcli connection down "$(ap_profile || echo "$AP")" >/dev/null 2>&1 || true
     rm -f "$AP_STAMP"
     sleep "$JOIN_WAIT"
 
