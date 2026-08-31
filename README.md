@@ -6,36 +6,55 @@ Entries save as dated Markdown files.
 
 The device is currently headless — the display is a phone or laptop attached
 over SSH to the same tmux session. See [docs/STATE.md](docs/STATE.md) for the
-hardware, the device configuration, and the open problems.
+hardware, the device configuration, and the open problems, and
+[device/](device/) for the files that live on the Pi rather than in the app.
 
-## On the device
+## Run locally
 
-Launched from `~/.profile` when the login shell is on `/dev/tty1`, inside a
-tmux session named `journal`. Attaching over SSH gives a second client on the
-same session, so a phone acts as the display.
+    JOURNAL_DEV=1 python journal.py
 
-- Entries: `~/journal/YYYY-MM-DD.md`
-- Config: `~/.journal-config.json`
+`JOURNAL_DEV=1` redirects to `~/journal-dev/` and `~/.journal-config-dev.json`,
+and turns shutdown and the hotspot control into no-ops, so every code path is
+safe to exercise.
+
+Windows Python has no `_curses` in the standard library, so local runs need the
+shim. The app itself stays dependency-free — this is a development-only tool:
+
+    python -m venv .venv
+    .venv\Scripts\python.exe -m pip install windows-curses
+
+Then run with `.venv\Scripts\python.exe`. On the Pi, `curses` is already there
+and no venv is needed.
+
+curses behaves differently between a Windows terminal and the Pi console,
+particularly for `Ctrl` keys and colour. Verify anything touching those on the
+device. Windows Terminal or WSL is closer to the target than `powershell.exe`.
+
+## Tests
+
+    .venv\Scripts\python.exe -m unittest discover -s tests -v
+
+Standard library `unittest`, no test dependencies. The curses screens are driven
+through a fake `stdscr` that records what was drawn, so the entry-list and
+reader viewports are tested against real behaviour rather than by
+re-implementing their arithmetic in the test.
 
 ## Deploy
 
     ./deploy.ps1
 
 Copies `journal.py` to the Pi and kills the running tmux session. It refuses to
-deploy a file with CRLF line endings, since the Pi runs it directly.
+deploy a file with CRLF line endings, since the Pi runs it directly. Whether the
+app relaunches by itself depends on `~/.profile`; see [device/README.md](device/README.md).
 
-## Run locally
+## On the device
 
-Not yet possible. Two things are in the way:
+Launched from `~/.profile` when the login shell is on `/dev/tty1`, inside a tmux
+session named `journal`. Attaching over SSH gives a second client on the same
+session, so a phone acts as the display.
 
-1. `journal.py` has no development mode, so a local run reads and writes the
-   real `~/journal/` and `~/.journal-config.json`, and shutdown would try to
-   run `sudo /sbin/poweroff`. A `JOURNAL_DEV=1` flag redirecting to
-   `~/journal-dev/` and making shutdown a no-op is planned.
-2. Windows Python has no `_curses` in the standard library. `pip install
-   windows-curses` is required.
-
-Once both are done the loop is `JOURNAL_DEV=1 python journal.py`.
+- Entries: `~/journal/YYYY-MM-DD.md`
+- Config: `~/.journal-config.json`
 
 ## Keys
 
@@ -46,7 +65,17 @@ Once both are done the loop is `JOURNAL_DEV=1 python journal.py`.
 | `^W` | delete last word      |
 | `^U` | clear current line    |
 
-Arrow keys navigate menus and scroll entries.
+Arrow keys navigate menus and scroll entries. In the entry list and the reader,
+`PgUp`/`PgDn`/`Home`/`End` also work.
+
+## Menu
+
+`Write`, `Browse entries`, `Settings`, `Hotspot`, `Shut down`.
+
+`Hotspot` brings up the `journal-ap` access point from the keyboard. It exists
+for the failure this device keeps hitting: joining a network that gives it no
+usable route, leaving no way in over SSH and no terminal on the device either.
+It needs the sudoers entry in [device/011_journal-hotspot](device/011_journal-hotspot).
 
 ## Settings
 
@@ -70,6 +99,9 @@ Adjustable in-app and persisted to JSON.
   made the cursor fail to advance until the character after a space was typed.
 - **Enter writes without `fsync`**; the `fsync` happens on the autosave timer,
   so pressing Enter never stalls on SD card I/O.
+- **Saves go through a temp file and a rename.** Writing over the entry directly
+  truncates it first, so losing power mid-write could empty the day's entry. A
+  crash now costs at most the last few keystrokes.
 - **`read_key` swallows escape sequences.** Terminals answer colour queries by
   writing escape strings back through stdin. Without this filter they land in
   the document as garbage.
@@ -78,13 +110,9 @@ Adjustable in-app and persisted to JSON.
 ## Known limitations
 
 - No editing of earlier text (by design, see above).
-- `browse()` draws only the first `h - 5` entries but lets the selection wrap
-  over the whole list, so past that many entries the selection points at a row
-  that is never drawn. There is no scrolling in the entry list.
-- `save_text()` truncates before writing, with no atomic replace. Losing power
-  inside that window can leave the day's entry truncated.
 - Font is a property of the terminal, not the app. On the physical console use
   `setfont` with a face from `/usr/share/consolefonts`; over SSH it is whatever
   the terminal app is set to.
-- curses behaves differently between a laptop terminal and the Pi console. Test
-  `Ctrl` keys and themes on the device before trusting them.
+- The access-point fallback in [device/](device/) is rewritten but **not yet
+  verified on hardware**. Until it is, the device is only reliable within reach
+  of a known network.

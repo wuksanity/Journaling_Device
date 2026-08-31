@@ -1,0 +1,13 @@
+[Unit]
+Description=Check journal device reachability every two minutes
+
+[Timer]
+# The old service ran once, 45 seconds after boot, and never again. This keeps
+# retrying for as long as the device is switched on.
+OnBootSec=45s
+OnUnitActiveSec=120s
+AccuracySec=5s
+Unit=journal-net-guard.service
+
+[Install]
+WantedBy=timers.target

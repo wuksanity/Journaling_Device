@@ -1,0 +1,12 @@
+[Unit]
+Description=Keep the journal device reachable (real network, else its own AP)
+After=NetworkManager.service
+Wants=NetworkManager.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/bin/journal-net-guard.sh
+
+# The script sleeps while waiting for NetworkManager, so cap it well under the
+# timer interval. systemd will not start a second run while one is in flight.
+TimeoutStartSec=110

@@ -1,0 +1,12 @@
+# Lets the Hotspot menu item in journal.py bring up the access point without a
+# password. Deliberately a separate file from 010_poweroff, so a mistake here
+# cannot take away the ability to shut the device down.
+#
+# Check the nmcli path on the device first:
+#
+#     command -v nmcli
+#
+# and correct the line below if it is not /usr/bin/nmcli. sudo matches the full
+# command, so only this exact invocation is permitted.
+
+walker ALL=(ALL) NOPASSWD: /usr/bin/nmcli connection up journal-ap

@@ -2,8 +2,13 @@
 import curses, os, time, json, locale, datetime, textwrap, subprocess
 
 locale.setlocale(locale.LC_ALL, "")
-JOURNAL_DIR = os.path.expanduser("~/journal")
-CONFIG_PATH = os.path.expanduser("~/.journal-config.json")
+
+# JOURNAL_DEV=1 redirects to a sandbox and makes shutdown a no-op, so every
+# code path can be exercised on a laptop without touching real entries.
+DEV = os.environ.get("JOURNAL_DEV") == "1"
+JOURNAL_DIR = os.path.expanduser("~/journal-dev" if DEV else "~/journal")
+CONFIG_PATH = os.path.expanduser(
+    "~/.journal-config-dev.json" if DEV else "~/.journal-config.json")
 
 THEMES = ["night", "paper", "amber", "green", "ocean"]
 THEME_COLORS = {
@@ -14,6 +19,9 @@ THEME_COLORS = {
     "ocean": (curses.COLOR_CYAN, curses.COLOR_BLUE),
 }
 DEFAULTS = {"theme": "night", "width": 58, "anchor": 62, "autosave": 5}
+
+AP_NAME = "journal-ap"
+AP_GATEWAY = "10.42.0.1"
 
 def load_config():
     cfg = dict(DEFAULTS)
@@ -39,12 +47,23 @@ def today_path():
     os.makedirs(JOURNAL_DIR, exist_ok=True)
     return os.path.join(JOURNAL_DIR, datetime.date.today().isoformat() + ".md")
 
+def read_file(path):
+    with open(path, encoding="utf-8") as f:
+        return f.read()
+
 def save_text(text, path, sync=True):
-    with open(path, "w", encoding="utf-8") as f:
+    """Write to a temp file and rename over the target. Opening the real path
+    with "w" truncates it first, so losing power mid-write could leave the
+    day's entry empty. os.replace is atomic, and ext4 flushes the data before
+    committing a rename-over-existing, so a crash costs at most the last few
+    keystrokes and never the file itself."""
+    tmp = path + ".tmp"
+    with open(tmp, "w", encoding="utf-8") as f:
         f.write(text)
         if sync:
             f.flush()
             os.fsync(f.fileno())
+    os.replace(tmp, path)
 
 def wrap_para(para, col):
     if para == "":
@@ -93,7 +112,7 @@ def centered(stdscr, y, s, attr=0):
         pass
 
 def menu(stdscr, cfg):
-    items = ["Write", "Browse entries", "Settings", "Shut down"]
+    items = ["Write", "Browse entries", "Settings", "Hotspot", "Shut down"]
     sel = 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -118,7 +137,7 @@ def menu(stdscr, cfg):
 
 def write_mode(stdscr, cfg):
     path = today_path()
-    text = open(path, encoding="utf-8").read() if os.path.exists(path) else ""
+    text = read_file(path) if os.path.exists(path) else ""
     paras = text.split("\n")
     cache = {}
     stdscr.timeout(250)
@@ -218,7 +237,7 @@ def write_mode(stdscr, cfg):
             dirty = True
 
 def read_entry(stdscr, cfg, path):
-    text = open(path, encoding="utf-8").read()
+    text = read_file(path)
     offset = 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -229,12 +248,15 @@ def read_entry(stdscr, cfg, path):
         lines = []
         for para in text.split("\n"):
             lines.extend(wrap_para(para, col))
+        body_h = max(1, h - 2)
+        max_off = max(0, len(lines) - body_h)
+        offset = min(offset, max_off)
         stdscr.erase()
         try:
             stdscr.addstr(0, left, os.path.basename(path)[:-3], curses.A_DIM)
         except curses.error:
             pass
-        for i, line in enumerate(lines[offset:offset + h - 2]):
+        for i, line in enumerate(lines[offset:offset + body_h]):
             try:
                 stdscr.addstr(i + 1, left, line[:col])
             except curses.error:
@@ -245,35 +267,59 @@ def read_entry(stdscr, cfg, path):
         if ch == "q":
             return
         elif ch == curses.KEY_DOWN:
-            offset = min(max(0, len(lines) - 1), offset + 1)
+            offset = min(max_off, offset + 1)
         elif ch == curses.KEY_UP:
             offset = max(0, offset - 1)
         elif ch == curses.KEY_NPAGE:
-            offset = min(max(0, len(lines) - 1), offset + (h - 3))
+            offset = min(max_off, offset + (h - 3))
         elif ch == curses.KEY_PPAGE:
             offset = max(0, offset - (h - 3))
+        elif ch == curses.KEY_HOME:
+            offset = 0
+        elif ch == curses.KEY_END:
+            offset = max_off
 
 def browse(stdscr, cfg):
     files = entries()
     if not files:
         return
-    sel = 0
+    sel, top = 0, 0
     stdscr.timeout(-1)
     curses.curs_set(0)
     while True:
         stdscr.erase()
         h, w = stdscr.getmaxyx()
+        rows = max(1, h - 5)
+        # Only `rows` entries fit on screen. Scroll to follow the selection,
+        # and only when it would otherwise leave the window, so the list does
+        # not jump around under you.
+        if sel < top:
+            top = sel
+        elif sel >= top + rows:
+            top = sel - rows + 1
+        top = max(0, min(top, max(0, len(files) - rows)))
         centered(stdscr, 1, "entries", curses.A_BOLD)
-        for i, f in enumerate(files[:h - 5]):
+        for i, f in enumerate(files[top:top + rows]):
             centered(stdscr, 3 + i, "  %s  " % f[:-3],
-                     curses.A_REVERSE if i == sel else 0)
-        centered(stdscr, h - 1, "enter to read    q to go back", curses.A_DIM)
+                     curses.A_REVERSE if top + i == sel else 0)
+        footer = "enter to read    q to go back"
+        if len(files) > rows:
+            footer = "%d/%d    %s" % (sel + 1, len(files), footer)
+        centered(stdscr, h - 1, footer, curses.A_DIM)
         stdscr.refresh()
         ch = read_key(stdscr, -1)
         if ch in (curses.KEY_UP, "k"):
             sel = (sel - 1) % len(files)
         elif ch in (curses.KEY_DOWN, "j"):
             sel = (sel + 1) % len(files)
+        elif ch == curses.KEY_NPAGE:
+            sel = min(len(files) - 1, sel + rows)
+        elif ch == curses.KEY_PPAGE:
+            sel = max(0, sel - rows)
+        elif ch == curses.KEY_HOME:
+            sel = 0
+        elif ch == curses.KEY_END:
+            sel = len(files) - 1
         elif ch == "q":
             return
         elif ch in ("\n", "\r", curses.KEY_ENTER):
@@ -314,6 +360,54 @@ def settings(stdscr, cfg):
             save_config(cfg)
             return
 
+def hotspot():
+    """Recovery path for the failure that keeps biting: the device joins a
+    network that gives it no usable route, so there is no way in over SSH and
+    no terminal on the device either. This brings the access point up from the
+    keyboard. Needs the sudoers entry in device/011_journal-hotspot."""
+    if DEV:
+        return "dev mode: leaving the network alone"
+    try:
+        r = subprocess.run(
+            ["sudo", "-n", "nmcli", "connection", "up", AP_NAME],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
+        if r.returncode == 0:
+            return "hotspot up"
+        out = r.stdout.decode("utf-8", "replace").strip().splitlines()
+        return (out[-1] if out else "failed")[:70]
+    except FileNotFoundError:
+        return "sudo or nmcli not found"
+    except subprocess.TimeoutExpired:
+        return "timed out after 60s"
+    except Exception as exc:
+        return str(exc)[:70]
+
+
+def hotspot_screen(stdscr, cfg):
+    stdscr.timeout(-1)
+    curses.curs_set(0)
+    h, w = stdscr.getmaxyx()
+    mid = max(3, h // 2)
+    stdscr.erase()
+    centered(stdscr, mid, "starting hotspot...", curses.A_BOLD)
+    stdscr.refresh()
+
+    result = hotspot()
+
+    stdscr.erase()
+    centered(stdscr, mid - 3, "hotspot", curses.A_BOLD)
+    centered(stdscr, mid - 1, result)
+    centered(stdscr, mid + 1, "network   %s" % AP_NAME, curses.A_DIM)
+    centered(stdscr, mid + 2, "ssh       walker@%s" % AP_GATEWAY, curses.A_DIM)
+    centered(stdscr, h - 2, "any key to go back", curses.A_DIM)
+    stdscr.refresh()
+    read_key(stdscr, -1)
+
+
+def power_off():
+    if not DEV:
+        subprocess.run(["sudo", "/sbin/poweroff"])
+
 def main(stdscr):
     curses.use_default_colors()
     cfg = load_config()
@@ -323,14 +417,18 @@ def main(stdscr):
         choice = menu(stdscr, cfg)
         if choice == "Write":
             if write_mode(stdscr, cfg) == "off":
-                subprocess.run(["sudo", "/sbin/poweroff"])
+                power_off()
                 return
         elif choice == "Browse entries":
             browse(stdscr, cfg)
         elif choice == "Settings":
             settings(stdscr, cfg)
+        elif choice == "Hotspot":
+            hotspot_screen(stdscr, cfg)
         elif choice == "Shut down":
-            subprocess.run(["sudo", "/sbin/poweroff"])
+            power_off()
             return
 
-curses.wrapper(main)
+# Guarded so the module can be imported by the tests without launching the UI.
+if __name__ == "__main__":
+    curses.wrapper(main)

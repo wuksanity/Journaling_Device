@@ -91,10 +91,12 @@ fi
 Note it is `.profile`, not `.bash_profile`. Raspberry Pi OS ships a `.profile`,
 and bash ignores `.bash_profile` when one exists. This wasted significant time.
 
-Open question: without `exec` in front of `tmux`, killing the session leaves an
-interactive shell on tty1 rather than relaunching the app. `deploy.ps1` kills
-the session, so this affects whether a deploy actually restarts the app or just
-leaves it stopped. Untested.
+Without `exec` in front of `tmux`, killing the session leaves an interactive
+shell on tty1 rather than relaunching the app — so `deploy.ps1`, which kills the
+session, leaves the app stopped rather than restarting it. A replacement that
+ends the login shell instead (letting autologin respawn it) is in
+`device/profile`, with a five-second escape hatch so a crash-on-startup cannot
+turn tty1 into a respawn loop. Not yet installed.
 
 **`/etc/sudoers.d/010_poweroff`** — lets the app shut down without a password:
 
@@ -117,7 +119,7 @@ Two profiles under NetworkManager:
 
 A systemd service `wifi-fallback.service` runs a script at boot that sleeps 45
 seconds and starts the AP if `wlan0` is not connected. **This does not work.**
-See open problems.
+See open problems — a replacement is written but not yet verified on hardware.
 
 ## Open problems
 
@@ -135,24 +137,30 @@ Suspected causes, unverified:
 - One-shot at boot with no retry, so a single failure is permanent until reboot.
 - The phone may auto-join a nearby café network and drop `journal-ap`.
 
-A proposed replacement checks for an actual IPv4 address rather than connection
-state, and runs on a systemd timer every 120 seconds instead of once:
+**A replacement is written, in `device/journal-net-guard.sh` plus a systemd
+timer. It has not been run on the device.** It differs from the original in four
+ways:
 
-```bash
-IP=$(ip -4 addr show wlan0 | grep -oP '(?<=inet\s)\d+(\.\d+){3}')
-if [ -z "$IP" ] || [[ "$IP" == 10.42.0.* ]]; then
-    if ! nmcli -t -f NAME connection show --active | grep -q journal-ap; then
-        nmcli connection up journal-ap
-    fi
-fi
-```
+- Checks for a routable IPv4 address rather than connection state, so a
+  half-connected association no longer suppresses the AP.
+- Runs every 120 seconds on a timer instead of once at boot, so a single failure
+  is no longer permanent.
+- Hands back to a real network when one appears, so arriving home does not
+  require a reboot to leave AP mode.
+- Refuses to disturb an AP that has a client attached, and leaves a fresh AP up
+  for ten minutes regardless — the radio cannot scan while serving an AP, so
+  checking for home wifi means dropping it briefly, and doing that every two
+  minutes would mean a phone never got the chance to join.
 
-This has not been tested. It should be verified at home by switching off the
-router, waiting two minutes, and confirming `journal-ap` appears and
-`10.42.0.1` is reachable.
+The address-parsing logic has been exercised against captured `ip` output for
+the connected, AP-mode, and no-address cases. Everything else needs the device.
+The verification procedure is in `device/README.md`: switch the router off, wait
+a little over two minutes, confirm `journal-ap` appears and `10.42.0.1` answers.
 
-Also worth adding: a way to force AP mode from the keyboard inside the app, so
-there is a recovery path when locked out with no terminal.
+The keyboard recovery path is done — `journal.py` has a `Hotspot` menu item that
+runs `nmcli connection up journal-ap`, for when the device is unreachable and
+there is no terminal on it. It needs the sudoers entry in
+`device/011_journal-hotspot`.
 
 ### 2. Running the Desktop image
 
@@ -169,10 +177,13 @@ urgent, but worth doing.
 Deferred on cost. Until then the phone-over-SSH arrangement is the display,
 which is why problem 1 is blocking rather than cosmetic.
 
-### 4. No local development loop
+### 4. No local development loop — resolved
 
-`journal.py` has no development mode, and Windows Python has no `_curses`. See
-the README. Until both are fixed, every change has to be tested on the device.
+`journal.py` now honours `JOURNAL_DEV=1`, redirecting to `~/journal-dev/` and
+making shutdown and the hotspot control no-ops. `windows-curses` in a venv
+supplies the missing `_curses` on Windows. There is a `unittest` suite under
+`tests/`. Ctrl keys and colour still need checking on the device, since curses
+differs between a Windows terminal and the Pi console.
 
 ## Planned, not started
 
