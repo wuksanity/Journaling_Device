@@ -72,14 +72,18 @@ resolves by mode and is safe either way.
 
 Additive — it does not change how you log in, so this is safe to do first.
 
-`iw` is not installed on the device, and the guard uses it to count clients
-attached to the AP. Without it the guard assumes a client is always present, so
-it will never hand back to the house network — safe, but it means arriving home
-still needs a reboot. Install it:
+The guard uses `iw` to count clients attached to the AP. Without it the guard
+assumes a client is always present, so it never hands back to the house network
+— safe, but it means arriving home needs a reboot. It ships with the OS image
+here (`/usr/sbin/iw`), so this is normally a no-op; run it to be sure:
 
 ```bash
 sudo apt install -y iw
 ```
+
+Note that `/usr/sbin` is not on a plain user's PATH, so `command -v iw` from a
+non-login shell reports it missing even when it is installed. Check with
+`ls /usr/sbin/iw` instead.
 
 ```bash
 sudo install -m 755 -o root -g root /tmp/journal-net-guard.sh /usr/local/bin/journal-net-guard.sh
