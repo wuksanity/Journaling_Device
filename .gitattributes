@@ -1,0 +1,7 @@
+# Everything in this repo except the deploy script ends up on a Linux box, and
+# core.autocrlf is true on the dev machine. Default to LF so a fresh clone or
+# checkout can never hand the Pi a CRLF journal.py and break the shebang.
+* text=auto eol=lf
+
+# PowerShell stays native to Windows.
+*.ps1 text eol=crlf
