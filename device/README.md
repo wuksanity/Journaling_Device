@@ -14,29 +14,86 @@ and needs verifying on the device before it is trusted away from the house.
 
 ## Install
 
-Copy the files over:
+Ordered least to most risky. Stop at any step that misbehaves — each one is
+independent of the ones after it.
+
+Stage all of it on the device first, from the repo root:
 
 ```bash
-scp device/journal-net-guard.sh walker@192.168.1.246:/tmp/
+scp device/journal-net-guard.sh device/journal-net-guard.service device/journal-net-guard.timer device/011_journal-hotspot device/profile walker@192.168.1.246:/tmp/
 ```
 
-Then on the device:
+### 1. The reachability guard
+
+Additive — it does not change how you log in, so this is safe to do first.
 
 ```bash
-sudo install -m 755 /tmp/journal-net-guard.sh /usr/local/bin/journal-net-guard.sh
+sudo install -m 755 -o root -g root /tmp/journal-net-guard.sh /usr/local/bin/journal-net-guard.sh
 ```
-
-Sudoers files must be installed with `visudo -c` checking them first, because a
-malformed file breaks sudo entirely:
 
 ```bash
-sudo install -m 440 -o root -g root /tmp/011_journal-hotspot /etc/sudoers.d/011_journal-hotspot && sudo visudo -c
+sudo install -m 644 -o root -g root /tmp/journal-net-guard.service /tmp/journal-net-guard.timer /etc/systemd/system/
 ```
 
-Enable the timer and retire the old one-shot service:
+Run it once by hand before trusting it to a timer, and read what it decided:
+
+```bash
+sudo /usr/local/bin/journal-net-guard.sh; journalctl -t journal-net -n 20 --no-pager
+```
+
+Connected to the house network, it should exit silently having done nothing.
+
+Then enable the timer and retire the old one-shot service:
 
 ```bash
 sudo systemctl daemon-reload && sudo systemctl enable --now journal-net-guard.timer && sudo systemctl disable --now wifi-fallback.service
+```
+
+### 2. The sudoers entry for the Hotspot menu item
+
+**Validate before installing.** A malformed file in `/etc/sudoers.d/` breaks
+`sudo` for everything, including the `sudo` you would need to repair it. Check
+the staged copy first, and only install if it passes:
+
+```bash
+sudo visudo -cf /tmp/011_journal-hotspot
+```
+
+It must print `parsed OK`. Confirm the nmcli path matches the file, since sudo
+matches the full command string:
+
+```bash
+command -v nmcli
+```
+
+Then install, and verify sudo still works in the same breath:
+
+```bash
+sudo install -m 440 -o root -g root /tmp/011_journal-hotspot /etc/sudoers.d/011_journal-hotspot && sudo -l | grep nmcli
+```
+
+If `sudo` has broken, you are not locked out: `pkexec visudo` or a root shell
+over SSH can remove the file.
+
+### 3. `~/.profile`
+
+Riskiest, because it changes what happens when tty1 logs in. Keep a copy:
+
+```bash
+cp ~/.profile ~/.profile.backup && install -m 644 /tmp/profile ~/.profile
+```
+
+**Test it over SSH before rebooting**, while you still have a way in:
+
+```bash
+tmux kill-session -t journal
+```
+
+Watch tty1 (or reattach): the app should come back on its own within a second or
+two. If instead tty1 sits at a prompt, or loops, restore the backup:
+
+```bash
+cp ~/.profile.backup ~/.profile
 ```
 
 ## Verify at home before relying on it
