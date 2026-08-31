@@ -17,6 +17,14 @@
 
 set -u
 
+# Be explicit rather than inheriting. Both `ip` and `iw` live in /usr/sbin,
+# which is absent from a plain user's PATH -- running this by hand from a
+# non-login shell would silently lose them, and `command -v iw` would report iw
+# missing on a machine where it is installed. systemd and sudo both provide
+# /usr/sbin, but do not rely on the caller.
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+export PATH
+
 AP="journal-ap"
 IFACE="wlan0"
 AP_SUBNET='^10\.42\.0\.'
