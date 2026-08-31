@@ -3,7 +3,7 @@
 # It must be .profile, not .bash_profile: Raspberry Pi OS ships a .profile and
 # bash ignores .bash_profile when one exists.
 
-if [ "$(tty)" = "/dev/tty1" ]; then
+if [ "$(tty)" = "/dev/tty1" ] && [ -z "${JOURNAL_SHELL:-}" ]; then
     tmux new-session -A -s journal "python3 $HOME/journal.py"
 
     # The session ended -- either deploy.ps1 killed it, or the app exited.
@@ -11,9 +11,13 @@ if [ "$(tty)" = "/dev/tty1" ]; then
     # the app. The read is an escape hatch: without it, an app that crashes on
     # startup would put tty1 into a respawn loop with no way to get a shell on
     # the console to fix it.
+    #
+    # JOURNAL_SHELL is what makes that hatch work. `exec bash -l` starts another
+    # login shell, which re-reads this file -- without the sentinel it would see
+    # /dev/tty1 and relaunch the app instead of giving you a prompt.
     echo
     if read -r -t 5 -p "journal exited. enter within 5s for a shell... "; then
-        exec bash -l
+        JOURNAL_SHELL=1 exec bash -l
     fi
     exit
 fi
