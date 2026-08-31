@@ -141,18 +141,44 @@ Riskiest, because it changes what happens when tty1 logs in. Keep a copy:
 cp ~/.profile ~/.profile.backup && install -m 644 /tmp/profile ~/.profile
 ```
 
-**Test it over SSH before rebooting**, while you still have a way in:
+**Replacing this file does not affect the shell already running on tty1.** That
+shell read the old copy at login and is still sitting inside it; killing the
+tmux session just drops it to an interactive prompt, as before. The new file
+takes effect on the next tty1 login, so the relaunch behaviour cannot be tested
+until after a reboot. Reboot first:
 
 ```bash
-tmux kill-session -t journal
+sudo reboot
 ```
 
-Watch tty1 (or reattach): the app should come back on its own within a second or
-two. If instead tty1 sits at a prompt, or loops, restore the backup:
+Once it comes back, confirm the app started from the new file:
 
 ```bash
-cp ~/.profile.backup ~/.profile
+ssh walker@192.168.1.246 tmux ls
 ```
+
+*Then* test the relaunch, which is the part that makes `deploy.ps1` work:
+
+```bash
+ssh walker@192.168.1.246 tmux kill-session -t journal
+```
+
+Wait about eight seconds — five for the escape-hatch prompt to time out, a
+couple more for autologin — and check that a *new* session exists, with a
+`created` timestamp only seconds old:
+
+```bash
+ssh walker@192.168.1.246 tmux ls
+```
+
+If no session comes back, restore the backup and reboot again:
+
+```bash
+cp ~/.profile.backup ~/.profile && sudo reboot
+```
+
+If tty1 ends up in a respawn loop, press Enter on the physical keyboard within
+the five-second window to get a shell.
 
 ## Verify at home before relying on it
 
