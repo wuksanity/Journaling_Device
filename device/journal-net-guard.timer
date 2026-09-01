@@ -4,7 +4,13 @@ Description=Check journal device reachability every two minutes
 [Timer]
 # The old service ran once, 45 seconds after boot, and never again. This keeps
 # retrying for as long as the device is switched on.
-OnBootSec=45s
+#
+# 45s was inherited from that old service and is far too early: a Pi Zero 2 W
+# cold-booting the Desktop image needs longer than that to associate and get a
+# DHCP lease. Firing at 45s meant the guard could decide there was no network
+# while wifi was still coming up, and pull the device off a connection that was
+# about to work. Three minutes is comfortably past a normal boot.
+OnBootSec=180s
 OnUnitActiveSec=120s
 AccuracySec=5s
 Unit=journal-net-guard.service

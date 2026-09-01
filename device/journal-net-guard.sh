@@ -30,7 +30,9 @@ IFACE="wlan0"
 AP_SUBNET='^10\.42\.0\.'
 JOIN_WAIT=20                        # seconds to let NetworkManager find a network
 HANDBACK_AFTER=600                  # leave a fresh AP alone for this long
+MIN_FAILS=2                         # consecutive dead checks before switching to AP
 AP_STAMP=/run/journal-net-ap-since   # tmpfs, so it clears on reboot
+FAIL_STAMP=/run/journal-net-fails
 
 log() { logger -t journal-net -- "$*"; }
 
@@ -88,10 +90,21 @@ ap_profile() {
     return 1
 }
 
+# Never leave the device with no network at all. A failed AP attempt on a
+# headless box means no SSH and no console -- the device just goes dark. Hand
+# the interface back to NetworkManager so it can autoconnect to a known network.
+restore_network() {
+    log "restoring normal networking on $IFACE"
+    nmcli connection down "$AP" >/dev/null 2>&1 || true
+    nmcli device disconnect "$IFACE" >/dev/null 2>&1 || true
+    nmcli device connect "$IFACE" >/dev/null 2>&1 || true
+}
+
 start_ap() {
     local uuid
     uuid=$(ap_profile) || {
         log "no connection profile named $AP is in AP mode -- cannot start it"
+        restore_network
         return 1
     }
     if nmcli connection up "$uuid" >/dev/null 2>&1; then
@@ -100,11 +113,13 @@ start_ap() {
         return 0
     fi
     log "failed to start access point $AP ($uuid)"
+    restore_network
     return 1
 }
 
 # --- already on a real network ---------------------------------------------
 if [ -n "$(routable_ip)" ]; then
+    rm -f "$FAIL_STAMP"
     exit 0
 fi
 
@@ -147,7 +162,20 @@ log "no routable address on $IFACE, waiting ${JOIN_WAIT}s"
 sleep "$JOIN_WAIT"
 
 if [ -n "$(routable_ip)" ]; then
+    rm -f "$FAIL_STAMP"
     exit 0
 fi
 
+# Require the network to be dead on consecutive checks before switching. A
+# single bad sample -- wifi still associating, a momentary DHCP renewal -- is
+# not worth pulling the device off a connection that is about to work, because
+# the AP it would switch to has no route to anywhere.
+fails=$(( $(cat "$FAIL_STAMP" 2>/dev/null || echo 0) + 1 ))
+echo "$fails" > "$FAIL_STAMP"
+if [ "$fails" -lt "$MIN_FAILS" ]; then
+    log "no network (check $fails of $MIN_FAILS) -- deferring the AP until the next run"
+    exit 0
+fi
+
+log "no network after $fails consecutive checks, starting the access point"
 start_ap
