@@ -2,13 +2,13 @@
 # Blink out which screen the app is on, on demand, so the device is navigable
 # with no display attached.
 #
-#     journal-led compass write|menu|browse|read|settings
+#     journal-led compass write|menu|browse|read|settings|hotspot|failed
 #     journal-led which     print the LED being driven
 #
-# One flash means writing, two the menu, and so on. Counting flashes is
-# unambiguous in a way that judging a rhythm's tempo is not, and it means the
-# LED is dark unless you have asked it something -- nothing blinks at you while
-# you write.
+# One flash means writing, two the menu, and so on; one long flash means
+# something failed. Counting flashes is unambiguous in a way that judging a
+# rhythm's tempo is not, and it means the LED is dark unless you have asked it
+# something -- nothing blinks at you while you write.
 #
 # The LED is handed straight back to its normal Scroll Lock function afterwards,
 # so the app borrows it for about two seconds and owns it the rest of the time
@@ -53,6 +53,9 @@ compass_count() {
         browse)   echo 3 ;;
         settings) echo 4 ;;
         read)     echo 5 ;;
+        hotspot)  echo 6 ;;
+        # A long single flash, distinct from any count: something went wrong.
+        failed)   echo -1 ;;
         *)        echo 0 ;;
     esac
 }
@@ -60,7 +63,21 @@ compass_count() {
 case "${1:-}" in
     compass)
         count=$(compass_count "${2:-}")
-        [ "$count" -gt 0 ] || exit 2
+        [ "$count" -eq 0 ] && exit 2
+        if [ "$count" -lt 0 ]; then
+            # Failure: one long flash, unmistakably not a count.
+            (
+                echo none > "$LED/trigger" 2>/dev/null
+                echo 0 > "$LED/brightness" 2>/dev/null
+                sleep 0.5
+                echo 1 > "$LED/brightness" 2>/dev/null
+                sleep 1.6
+                echo 0 > "$LED/brightness" 2>/dev/null
+                echo "$(default_trigger)" > "$LED/trigger" 2>/dev/null \
+                    || echo none > "$LED/trigger" 2>/dev/null
+            ) >/dev/null 2>&1 &
+            exit 0
+        fi
         # Backgrounded and detached: this sleeps, and it is triggered by a
         # keypress. Blocking here would stall the keystroke loop the way syncing
         # on every newline used to.

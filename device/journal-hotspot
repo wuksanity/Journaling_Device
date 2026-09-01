@@ -1,0 +1,58 @@
+#!/bin/bash
+# Raise the access point for a bounded window, detached, so the app can offer it
+# from the keyboard without being able to strand the device.
+#
+#     journal-hotspot up [seconds]    default 900 (15 minutes)
+#     journal-hotspot down            end it now and restore the house network
+#     journal-hotspot status          up / down
+#
+# Why this exists rather than the app running nmcli itself:
+#
+#   * Raising the AP drops the wifi the app is being viewed over, so a
+#     foreground nmcli call kills its own connection and then blocks. Worse, the
+#     app's subprocess timeout was shorter than nmcli's own, so it killed nmcli
+#     mid-activation and left the interface with neither network up.
+#   * `nmcli connection up journal-ap` on its own has no path back. Once raised,
+#     the AP stayed until someone rebooted -- on a device with no screen, that
+#     means pressing one menu item could leave you with no way in at all.
+#
+# systemd-run detaches it, so the app returns immediately and never blocks on
+# its own network going away. ap-test.sh holds the AP for the window and then
+# restores the house network from an EXIT trap, whether or not anyone connected.
+
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+UNIT=journal-hotspot
+HOLD=/usr/local/bin/ap-test.sh
+WINDOW="${2:-900}"
+
+case "${1:-status}" in
+    up)
+        if systemctl is-active --quiet "$UNIT.service" 2>/dev/null; then
+            echo "already up"
+            exit 0
+        fi
+        [ -x "$HOLD" ] || { echo "$HOLD missing" >&2; exit 1; }
+        # --collect so a finished run does not linger as a failed unit and block
+        # the next attempt.
+        systemd-run --unit="$UNIT" --collect --description="journal hotspot" \
+            "$HOLD" "$WINDOW" >/dev/null 2>&1 || { echo "failed to start" >&2; exit 1; }
+        echo "up for ${WINDOW}s"
+        ;;
+    down)
+        systemctl stop "$UNIT.service" >/dev/null 2>&1 || true
+        echo "down"
+        ;;
+    status)
+        if systemctl is-active --quiet "$UNIT.service" 2>/dev/null; then
+            echo "up"
+        else
+            echo "down"
+        fi
+        ;;
+    *)
+        echo "usage: journal-hotspot up [seconds] | down | status" >&2
+        exit 2
+        ;;
+esac

@@ -72,10 +72,23 @@ Arrow keys navigate menus and scroll entries. In the entry list and the reader,
 
 `Write`, `Browse entries`, `Settings`, `Hotspot`, `Shut down`.
 
-`Hotspot` brings up the `journal-ap` access point from the keyboard. It exists
-for the failure this device keeps hitting: joining a network that gives it no
-usable route, leaving no way in over SSH and no terminal on the device either.
-It needs the sudoers entry in [device/011_journal-hotspot](device/011_journal-hotspot).
+`Hotspot` raises the `journal-ap` access point from the keyboard. It exists for
+the failure this device keeps hitting: joining a network that gives it no usable
+route, leaving no way in over SSH and no terminal on the device either.
+
+**It is bounded.** The AP is held for 15 minutes and then the house network comes
+back by itself, whether or not anyone connected. Pressing it cannot strand the
+device — which the first version could, because it ran `nmcli connection up`
+directly with no path back, and with a subprocess timeout shorter than nmcli's
+own, so it killed the activation halfway and left neither network up.
+
+You press this blind: raising the AP drops the connection you would have read the
+screen over. So the LED confirms it — **six flashes** means the hotspot is up,
+**one long flash** means it failed. `^L` repeats the answer.
+
+Needs [device/journal-hotspot](device/journal-hotspot), which runs
+[device/ap-test.sh](device/ap-test.sh) detached via `systemd-run`, and the
+sudoers entry in [device/014_journal-hotspot](device/014_journal-hotspot).
 
 ## Settings
 
@@ -153,13 +166,15 @@ on. An indicator you can accidentally leave off is worse than no indicator, and
 it having been a setting that defaulted to `off` silently broke a real
 away-from-home test.
 
-| Flashes | Where you are |
-|---------|---------------|
-| 1 | writing |
-| 2 | menu |
-| 3 | browsing entries |
-| 4 | settings |
-| 5 | reading an entry |
+| Signal | Meaning |
+|--------|---------|
+| 1 flash | writing |
+| 2 flashes | menu |
+| 3 flashes | browsing entries |
+| 4 flashes | settings |
+| 5 flashes | reading an entry |
+| 6 flashes | hotspot is up — join `journal-ap` |
+| one long flash | something failed; deliberately not a count, so it cannot be miscounted |
 
 There is a clear pause either side of the count so you know where it starts and
 ends. The two screens you are in most often are the fewest to count.

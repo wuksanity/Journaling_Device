@@ -556,25 +556,45 @@ def settings(stdscr, cfg):
             save_config(cfg)
             return
 
+HOTSPOT_HELPER = "/usr/local/bin/journal-hotspot"
+HOTSPOT_WINDOW = 900            # seconds the AP is held before it restores itself
+
+
 def hotspot():
     """Recovery path for the failure that keeps biting: the device joins a
-    network that gives it no usable route, so there is no way in over SSH and
-    no terminal on the device either. This brings the access point up from the
-    keyboard. Needs the sudoers entry in device/011_journal-hotspot."""
+    network that gives it no usable route, so there is no way in over SSH and no
+    terminal on the device either. This raises the access point from the
+    keyboard.
+
+    Delegated to a helper that runs it detached and bounded, rather than calling
+    nmcli here, for two reasons learned the hard way:
+
+      * Raising the AP drops the wifi this app is being viewed over. Calling
+        nmcli in the foreground means killing our own connection and then
+        blocking on it -- and a subprocess timeout shorter than nmcli's own 90s
+        killed it mid-activation, leaving neither network up.
+      * `nmcli connection up` alone has no path back. The AP stayed until
+        someone rebooted, so one menu item could leave a screenless device
+        completely unreachable.
+
+    The helper restores the house network when the window expires whether or not
+    anyone connected, so this can no longer strand the device.
+
+    Needs the sudoers entry in device/014_journal-hotspot."""
     if DEV:
         return "dev mode: leaving the network alone"
     try:
         r = subprocess.run(
-            ["sudo", "-n", "nmcli", "connection", "up", AP_NAME],
-            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=60)
-        if r.returncode == 0:
-            return "hotspot up"
+            ["sudo", "-n", HOTSPOT_HELPER, "up", str(HOTSPOT_WINDOW)],
+            stdout=subprocess.PIPE, stderr=subprocess.STDOUT, timeout=20)
         out = r.stdout.decode("utf-8", "replace").strip().splitlines()
+        if r.returncode == 0:
+            return "hotspot up for %d min" % (HOTSPOT_WINDOW // 60)
         return (out[-1] if out else "failed")[:70]
     except FileNotFoundError:
-        return "sudo or nmcli not found"
+        return "hotspot helper not installed"
     except subprocess.TimeoutExpired:
-        return "timed out after 60s"
+        return "helper did not answer in 20s"
     except Exception as exc:
         return str(exc)[:70]
 
@@ -591,13 +611,28 @@ def hotspot_screen(stdscr, cfg):
     result = hotspot()
 
     stdscr.erase()
-    centered(stdscr, mid - 3, "hotspot", curses.A_BOLD)
-    centered(stdscr, mid - 1, result)
-    centered(stdscr, mid + 1, "network   %s" % AP_NAME, curses.A_DIM)
-    centered(stdscr, mid + 2, "ssh       walker@%s" % AP_GATEWAY, curses.A_DIM)
-    centered(stdscr, h - 2, "any key to go back", curses.A_DIM)
+    centered(stdscr, mid - 4, "hotspot", curses.A_BOLD)
+    centered(stdscr, mid - 2, result)
+    centered(stdscr, mid, "network   %s" % AP_NAME, curses.A_DIM)
+    centered(stdscr, mid + 1, "ssh       walker@%s" % AP_GATEWAY, curses.A_DIM)
+    centered(stdscr, mid + 3, "the house network comes back by itself",
+             curses.A_DIM)
+    centered(stdscr, h - 2, "any key to go back    ^L to confirm",
+             curses.A_DIM)
     stdscr.refresh()
-    read_key(stdscr, -1)
+
+    # Six flashes says the hotspot is up. This screen is reached blind -- the
+    # act of raising the AP drops the connection you would have read it over --
+    # so the LED is the only confirmation available.
+    compass(cfg, "hotspot" if result.startswith("hotspot up") else "failed")
+
+    while True:
+        ch = read_key(stdscr, -1)
+        if ch in ("l", "\x0c"):
+            compass(cfg, "hotspot" if result.startswith("hotspot up")
+                    else "failed")
+            continue
+        return
 
 
 def power_off():

@@ -69,6 +69,26 @@ else
     echo "  /tmp/journal-led not staged, skipping"
 fi
 
+say "hotspot helper"
+# journal-hotspot delegates the actual hold to ap-test.sh, so both are needed.
+if [ -f /tmp/ap-test.sh ]; then
+    sudo install -m 755 -o root -g root /tmp/ap-test.sh /usr/local/bin/ap-test.sh
+    echo "  ap-test.sh installed"
+fi
+# Bounded AP from the keyboard: held for a window, then the house network comes
+# back by itself. The app must never raise the AP with no path back.
+if [ -f /tmp/journal-hotspot ]; then
+    sudo install -m 755 -o root -g root /tmp/journal-hotspot /usr/local/bin/journal-hotspot
+    if [ -f /tmp/014_journal-hotspot ] && sudo visudo -cf /tmp/014_journal-hotspot >/dev/null; then
+        sudo install -m 440 -o root -g root /tmp/014_journal-hotspot /etc/sudoers.d/014_journal-hotspot
+        echo "  installed"
+    else
+        echo "  sudoers file missing or failed visudo -c" >&2
+    fi
+else
+    echo "  /tmp/journal-hotspot not staged, skipping"
+fi
+
 say "console font permission"
 # The font setting in journal.py calls setfont, which writes to root-owned
 # /dev/tty0. Validate before installing: a bad file here breaks sudo entirely.

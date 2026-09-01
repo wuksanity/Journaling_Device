@@ -1,0 +1,15 @@
+# Lets the Hotspot menu item raise the access point from the keyboard.
+#
+# Replaces 011_journal-hotspot, which permitted `nmcli connection up
+# journal-ap` directly. That was the wrong thing to allow: raising the AP that
+# way has no path back, so one menu press could leave a screenless device
+# unreachable until someone rebooted it.
+#
+# This wrapper runs the AP detached and bounded -- the house network is restored
+# when the window expires whether or not anyone connected -- so the app can
+# offer it without being able to strand the device.
+#
+# Separate from 010_poweroff so a mistake here cannot take away the ability to
+# shut the device down.
+
+walker ALL=(ALL) NOPASSWD: /usr/local/bin/journal-hotspot
