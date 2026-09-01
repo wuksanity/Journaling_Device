@@ -331,6 +331,110 @@ class Config(unittest.TestCase):
             self.assertIn(name, journal.THEME_COLORS)
 
 
+class RuledPaper(unittest.TestCase):
+    """The ruling is an underline attribute on a space-padded line, so it costs
+    no rows. The padding is what makes the rule span the full measure instead
+    of stopping at the end of the text."""
+
+    def cfg(self, paper):
+        c = dict(journal.DEFAULTS)
+        c["paper"] = paper
+        return c
+
+    def test_attr_is_off_by_default(self):
+        self.assertEqual(journal.DEFAULTS["paper"], "off")
+        self.assertEqual(journal.paper_attr(journal.DEFAULTS), 0)
+
+    def test_attr_set_for_lined_and_margin(self):
+        for p in ("lined", "margin"):
+            self.assertEqual(journal.paper_attr(self.cfg(p)),
+                             curses.A_UNDERLINE, p)
+
+    def test_missing_key_does_not_raise(self):
+        # An older config file will not have the key.
+        self.assertEqual(journal.paper_attr({}), 0)
+
+    def test_unruled_lines_are_not_padded(self):
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("off"), ["short"], 1, 5, 40, 3)
+        drawn = [s for y, x, s, attr in scr.drawn]
+        self.assertEqual(drawn[0], "short")
+        self.assertTrue(all(a == 0 for y, x, s, a in scr.drawn))
+
+    def test_ruled_lines_are_padded_to_the_full_column(self):
+        col = 40
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("lined"), ["short"], 1, 5, col, 3)
+        for y, x, s, attr in scr.drawn:
+            self.assertEqual(len(s), col, "every ruled row spans the column")
+            self.assertTrue(attr & curses.A_UNDERLINE)
+
+    def test_rows_past_the_text_are_still_ruled(self):
+        # This is what makes it read as ruled paper rather than underlined text.
+        rows = 6
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("lined"), ["one"], 1, 5, 30, rows)
+        ruled = [s for y, x, s, attr in scr.drawn if attr & curses.A_UNDERLINE]
+        self.assertEqual(len(ruled), rows)
+        self.assertEqual(ruled[-1].strip(), "", "trailing rows are blank but ruled")
+
+    def test_margin_draws_a_rule_left_of_the_column(self):
+        left = 8
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("margin"), ["x"], 1, left, 30, 4)
+        margin = [(y, x, s) for y, x, s, attr in scr.drawn if x == left - 2]
+        self.assertEqual(len(margin), 4, "one margin mark per row")
+        self.assertEqual(margin[0][2], "│")
+
+    def test_margin_is_skipped_when_there_is_no_room(self):
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("margin"), ["x"], 1, 1, 30, 2)
+        self.assertFalse([1 for y, x, s, attr in scr.drawn if x < 0])
+
+    def test_long_lines_are_truncated_to_the_column(self):
+        col = 20
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("lined"), ["y" * 100], 1, 2, col, 1)
+        self.assertEqual(len(scr.drawn[0][2]), col)
+
+
+class ConsoleFont(unittest.TestCase):
+    def test_default_is_a_known_option(self):
+        self.assertIn(journal.DEFAULTS["font"], journal.FONTS)
+        self.assertEqual(journal.FONTS[0], "default")
+
+    def test_every_size_maps_to_a_real_family_name(self):
+        for size in journal.FONTS[1:]:
+            name = journal.FONT_FAMILY % size
+            self.assertTrue(name.startswith("Uni2-Terminus"))
+
+    def test_apply_font_is_a_noop_under_dev(self):
+        # Must not shell out to setfont during local development.
+        called = []
+        real = journal.subprocess.run
+        journal.subprocess.run = lambda *a, **k: called.append(a)
+        try:
+            cfg = dict(journal.DEFAULTS)
+            cfg["font"] = "24x12"
+            journal.apply_font(cfg)
+        finally:
+            journal.subprocess.run = real
+        self.assertEqual(called, [], "DEV must not run setfont")
+
+    def test_apply_font_skips_the_default(self):
+        called = []
+        real = journal.subprocess.run
+        journal.subprocess.run = lambda *a, **k: called.append(a)
+        try:
+            journal.apply_font({"font": "default"})
+        finally:
+            journal.subprocess.run = real
+        self.assertEqual(called, [])
+
+    def test_missing_font_key_does_not_raise(self):
+        journal.apply_font({})
+
+
 class Menu(unittest.TestCase):
     def _choose(self, index):
         scr = FakeScr(keys=[curses.KEY_DOWN] * index + ["\n"])

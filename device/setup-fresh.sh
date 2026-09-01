@@ -53,6 +53,21 @@ printf '%s ALL=(ALL) NOPASSWD: /sbin/poweroff\n' "$USER" | \
 sudo chmod 440 /etc/sudoers.d/010_poweroff
 sudo visudo -c >/dev/null && echo "sudoers OK"
 
+say "console font permission"
+# The font setting in journal.py calls setfont, which writes to root-owned
+# /dev/tty0. Validate before installing: a bad file here breaks sudo entirely.
+if [ -f /tmp/011_journal-console ]; then
+    if sudo visudo -cf /tmp/011_journal-console >/dev/null; then
+        sudo install -m 440 -o root -g root /tmp/011_journal-console \
+            /etc/sudoers.d/011_journal-console
+        echo "  installed, setfont at $(command -v setfont || echo '/usr/bin/setfont')"
+    else
+        echo "  /tmp/011_journal-console failed visudo -c, not installing" >&2
+    fi
+else
+    echo "  /tmp/011_journal-console not staged, skipping"
+fi
+
 say "access point profile"
 # Create it fresh with a known password. The old install had two profiles both
 # named journal-ap -- one a client profile trying to join a network that did

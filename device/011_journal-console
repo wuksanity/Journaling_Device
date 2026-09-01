@@ -1,0 +1,14 @@
+# Lets the font setting in journal.py change the console font. setfont acts on
+# the current virtual console through /dev/tty0, which is root-owned, so it
+# needs this even though the user owns tty1 itself.
+#
+# Separate from 010_poweroff so a mistake here cannot take away the ability to
+# shut the device down. Check the path on the device first:
+#
+#     command -v setfont
+#
+# sudo matches the full command, and the font name is an argument, so this
+# permits setfont with any argument. That is the intent -- the app cycles
+# through the Uni2-Terminus sizes in journal.FONTS.
+
+walker ALL=(ALL) NOPASSWD: /usr/bin/setfont

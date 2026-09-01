@@ -18,7 +18,21 @@ THEME_COLORS = {
     "green": (curses.COLOR_GREEN, curses.COLOR_BLACK),
     "ocean": (curses.COLOR_CYAN, curses.COLOR_BLUE),
 }
-DEFAULTS = {"theme": "night", "width": 58, "anchor": 62, "autosave": 5}
+# Console font sizes, smallest to largest. Fonts belong to the terminal, not
+# the app: on the physical console that means setfont, and over SSH it is
+# whatever the terminal app is set to, so this only bites on tty1.
+FONTS = ["default", "12x6", "14", "16", "18x10", "20x10",
+         "22x11", "24x12", "28x14", "32x16"]
+FONT_FAMILY = "Uni2-Terminus%s"     # Uni2 covers the widest charset of the set
+
+# Ruled-paper backgrounds. "lined" underlines the full text column on every row,
+# including the empty ones below the cursor, which is what makes the page read
+# as ruled rather than just underlined text. "margin" adds a notebook rule down
+# the left edge.
+PAPERS = ["off", "lined", "margin"]
+
+DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
+            "width": 58, "anchor": 62, "autosave": 5}
 
 AP_NAME = "journal-ap"
 AP_GATEWAY = "10.42.0.1"
@@ -94,6 +108,49 @@ def read_key(stdscr, timeout=250):
         stdscr.timeout(timeout)
         return None
     return ch
+
+def apply_font(cfg):
+    """Set the console font. setfont acts on the current virtual console via
+    /dev/tty0, which is root-owned, so this needs the sudoers entry in
+    device/011_journal-console. Over SSH it changes the console nobody is
+    looking at, which is harmless."""
+    if DEV or cfg.get("font", "default") == "default":
+        return
+    try:
+        subprocess.run(["sudo", "-n", "setfont", FONT_FAMILY % cfg["font"]],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=10)
+    except Exception:
+        pass
+
+
+def paper_attr(cfg):
+    """The ruling is an underline attribute rather than drawn characters, so it
+    costs no rows and cannot collide with the text."""
+    return curses.A_UNDERLINE if cfg.get("paper", "off") != "off" else 0
+
+
+def draw_page(stdscr, cfg, view, top, left, col, rows):
+    """Draw `rows` screen rows starting at `top`, ruled if the setting asks for
+    it. Short lines are padded to the column width so the rule runs the full
+    measure, and rows past the end of the text are drawn as blank ruled lines."""
+    rule = paper_attr(cfg)
+    margin = cfg.get("paper", "off") == "margin"
+    for i in range(rows):
+        line = view[i] if i < len(view) else ""
+        try:
+            if rule:
+                stdscr.addstr(top + i, left, line[:col].ljust(col), rule)
+            else:
+                stdscr.addstr(top + i, left, line[:col])
+        except curses.error:
+            pass
+        if margin and left >= 2:
+            try:
+                stdscr.addstr(top + i, left - 2, "\u2502", curses.A_DIM)
+            except curses.error:
+                pass
+
 
 def apply_theme(stdscr, cfg):
     try:
@@ -173,11 +230,7 @@ def write_mode(stdscr, cfg):
                     datetime.date.today().strftime("%A, %d %B %Y")[:col], curses.A_DIM)
             except curses.error:
                 pass
-            for i, line in enumerate(view):
-                try:
-                    stdscr.addstr(i + 1, left, line[:col])
-                except curses.error:
-                    pass
+            draw_page(stdscr, cfg, view, 1, left, col, body_h)
             status = "%d words" % sum(len(p.split()) for p in paras)
             if not dirty:
                 status += "    saved"
@@ -256,11 +309,7 @@ def read_entry(stdscr, cfg, path):
             stdscr.addstr(0, left, os.path.basename(path)[:-3], curses.A_DIM)
         except curses.error:
             pass
-        for i, line in enumerate(lines[offset:offset + body_h]):
-            try:
-                stdscr.addstr(i + 1, left, line[:col])
-            except curses.error:
-                pass
+        draw_page(stdscr, cfg, lines[offset:offset + body_h], 1, left, col, body_h)
         centered(stdscr, h - 1, "arrows to scroll    q to go back", curses.A_DIM)
         stdscr.refresh()
         ch = read_key(stdscr, -1)
@@ -326,7 +375,7 @@ def browse(stdscr, cfg):
             read_entry(stdscr, cfg, os.path.join(JOURNAL_DIR, files[sel]))
 
 def settings(stdscr, cfg):
-    fields = ["theme", "width", "anchor", "autosave"]
+    fields = ["theme", "font", "paper", "width", "anchor", "autosave"]
     sel = 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -334,8 +383,9 @@ def settings(stdscr, cfg):
         stdscr.erase()
         h, w = stdscr.getmaxyx()
         centered(stdscr, 1, "settings", curses.A_BOLD)
+        # Single-spaced now that there are six of them.
         for i, f in enumerate(fields):
-            centered(stdscr, 4 + i * 2, "  %-9s %-8s  " % (f, cfg[f]),
+            centered(stdscr, 3 + i * 2, "  %-9s %-8s  " % (f, cfg[f]),
                      curses.A_REVERSE if i == sel else 0)
         centered(stdscr, h - 2, "left/right to change    q to go back", curses.A_DIM)
         stdscr.refresh()
@@ -350,6 +400,11 @@ def settings(stdscr, cfg):
             if f == "theme":
                 cfg[f] = THEMES[(THEMES.index(cfg[f]) + d) % len(THEMES)]
                 apply_theme(stdscr, cfg)
+            elif f == "font":
+                cfg[f] = FONTS[(FONTS.index(cfg[f]) + d) % len(FONTS)]
+                apply_font(cfg)
+            elif f == "paper":
+                cfg[f] = PAPERS[(PAPERS.index(cfg[f]) + d) % len(PAPERS)]
             elif f == "width":
                 cfg[f] = max(30, min(100, cfg[f] + d * 2))
             elif f == "anchor":
@@ -412,6 +467,7 @@ def main(stdscr):
     curses.use_default_colors()
     cfg = load_config()
     apply_theme(stdscr, cfg)
+    apply_font(cfg)
     stdscr.keypad(True)
     while True:
         choice = menu(stdscr, cfg)

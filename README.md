@@ -84,9 +84,47 @@ Adjustable in-app and persisted to JSON.
 | Setting    | Range     | Notes                                 |
 |------------|-----------|---------------------------------------|
 | `theme`    | 5 presets | night, paper, amber, green, ocean     |
+| `font`     | 9 sizes   | console font size, `12x6` to `32x16`  |
+| `paper`    | 3 modes   | `off`, `lined`, `margin`              |
 | `width`    | 30-100    | text column width in characters       |
 | `anchor`   | 20-95     | cursor position down the screen, as % |
 | `autosave` | 1-60      | seconds between fsyncs                |
+
+### `paper` — ruled background
+
+`lined` underlines the full width of the text column on every row, including the
+empty rows below the cursor. Padding short lines out to the column width is what
+makes it read as ruled paper rather than as underlined text. `margin` adds a
+`│` rule down the left edge, like a notebook. Pairs best with the `paper` theme.
+
+It costs no rows and cannot collide with the text, because the rule is a
+character attribute rather than drawn characters.
+
+Verified with `tools/pty_probe.py`: under `tmux-256color` and `screen` — the
+terminfo the app actually gets inside tmux, both on the console and over SSH —
+`lined` and `margin` emit the underline attribute and `off` does not.
+
+One caveat if you ever run the app outside tmux on the physical console: the
+`linux` terminfo sets `ncv#18`, marking underline as unusable alongside colour,
+so ncurses drops it and the ruling silently disappears. Inside tmux this does
+not arise.
+
+### `font` — console font size
+
+Fonts belong to the terminal, not the app. On the physical console that means
+`setfont`, which this setting calls with `Uni2-Terminus<size>`; over SSH the font
+is whatever your terminal app is set to, so the setting has no effect there.
+
+**It needs a display attached to do anything.** With nothing on the HDMI port
+there is no framebuffer console — no `/dev/fb0`, `vc4-drm` reports "Cannot find
+any crtc or sizes" — and `setfont` fails with *"Unable to load such font with
+such kernel version"*. The setting is stored and applied on the next start, so
+it will take effect once a screen exists. `hdmi_force_hotplug=1` in
+`config.txt` would create a framebuffer without a monitor attached, at some
+power cost.
+
+Requires the sudoers entry in [device/011_journal-console](device/011_journal-console),
+because `setfont` writes to root-owned `/dev/tty0`.
 
 ## Design notes
 
