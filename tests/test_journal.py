@@ -469,11 +469,11 @@ class StaleConfig(unittest.TestCase):
             self.assertEqual(cfg[key], journal.DEFAULTS[key], key)
 
     def test_valid_values_are_kept(self):
-        self.write({"theme": "paper", "paper": "margin", "led": "blink"})
+        self.write({"theme": "paper", "paper": "margin", "led": "on"})
         cfg = journal.load_config()
         self.assertEqual(cfg["theme"], "paper")
         self.assertEqual(cfg["paper"], "margin")
-        self.assertEqual(cfg["led"], "blink")
+        self.assertEqual(cfg["led"], "on")
 
     def test_non_integer_numbers_fall_back(self):
         self.write({"width": "wide", "anchor": None, "autosave": True})
@@ -540,7 +540,7 @@ class LedSignalling(unittest.TestCase):
             journal.DEV = real_dev
         return calls
 
-    def on(self, mode="blink"):
+    def on(self, mode="on"):
         c = dict(journal.DEFAULTS)
         c["led"] = mode
         return c
@@ -549,30 +549,58 @@ class LedSignalling(unittest.TestCase):
         self.assertEqual(journal.DEFAULTS["led"], "off")
         self.assertIn(journal.DEFAULTS["led"], journal.LEDS)
 
+    def test_the_setting_is_only_on_or_off(self):
+        self.assertEqual(journal.LEDS, ["off", "on"])
+
     def test_nothing_runs_when_the_setting_is_off(self):
-        calls = self.capture(lambda: journal.led(dict(journal.DEFAULTS), "write"))
+        calls = self.capture(lambda: journal.compass(dict(journal.DEFAULTS),
+                                                     "write"))
         self.assertEqual(calls, [])
 
     def test_nothing_runs_under_dev(self):
         # Local development must not shell out to the device helper.
-        calls = self.capture(lambda: journal.led(self.on(), "write"), dev=True)
+        calls = self.capture(lambda: journal.compass(self.on(), "write"),
+                             dev=True)
         self.assertEqual(calls, [])
 
-    def test_state_is_passed_to_the_helper(self):
-        calls = self.capture(lambda: journal.led(self.on(), "write"))
+    def test_compass_passes_two_arguments(self):
+        calls = self.capture(lambda: journal.compass(self.on(), "browse"))
         self.assertEqual(len(calls), 1)
-        self.assertEqual(calls[0][-1], "write")
+        self.assertEqual(calls[0][-2:], ["compass", "browse"])
         self.assertIn(journal.LED_HELPER, calls[0])
         self.assertEqual(calls[0][:2], ["sudo", "-n"])
-
-    def test_compass_passes_two_arguments(self):
-        calls = self.capture(lambda: journal.compass(self.on("blink"), "browse"))
-        self.assertEqual(calls[0][-2:], ["compass", "browse"])
 
     def test_every_screen_has_a_compass_name(self):
         for where in ("write", "menu", "browse", "read", "settings"):
             calls = self.capture(lambda w=where: journal.compass(self.on(), w))
             self.assertEqual(calls[0][-1], where)
+
+    def test_there_is_no_ambient_signalling_left(self):
+        # The LED must stay dark unless asked. journal.led() used to signal on
+        # screen changes and on save; it is gone, and nothing replaced it.
+        self.assertFalse(hasattr(journal, "led"),
+                         "an ambient led() entry point came back")
+        self.assertFalse(hasattr(journal, "led_release"))
+
+    def test_a_whole_session_signals_nothing_without_a_keypress(self):
+        cfg = self.on()
+        d = tempfile.mkdtemp()
+        real = journal.JOURNAL_DIR
+        journal.JOURNAL_DIR = d
+        try:
+            def session():
+                # Write something, let it autosave, browse, read, and quit --
+                # none of which may light the LED.
+                scr = FakeScr(keys=list("hello") + ["\n", "\x18"])
+                journal.write_mode(scr, cfg)
+                with open(os.path.join(d, "2026-01-01.md"), "w") as f:
+                    f.write("older entry")
+                journal.browse(FakeScr(keys=["\n", "q", "q"]), cfg)
+            calls = self.capture(session)
+        finally:
+            journal.JOURNAL_DIR = real
+            shutil.rmtree(d, ignore_errors=True)
+        self.assertEqual(calls, [], "something signalled without ^L")
 
 
 class CompassKey(unittest.TestCase):

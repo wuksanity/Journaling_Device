@@ -86,7 +86,7 @@ Adjustable in-app and persisted to JSON.
 | `theme`    | 5 presets | night, paper, amber, green, ocean     |
 | `font`     | 9 sizes   | console font size, `12x6` to `32x16`  |
 | `paper`    | 3 modes   | `off`, `ruled`, `margin`              |
-| `led`      | 2 modes   | `off`, `blink` — screen indicator     |
+| `led`      | `off`, `on` | ^L counts out which screen you are on |
 | `width`    | 30-100    | text column width in characters       |
 | `anchor`   | 20-95     | cursor position down the screen, as % |
 | `autosave` | 1-60      | seconds between fsyncs                |
@@ -142,23 +142,36 @@ because `setfont` writes to root-owned `/dev/tty0`.
 
 The point of writing on this thing screenless is that there is nothing to look
 at. But then nothing tells you which screen the app is on, and typing into a
-menu does nothing. One answer, opt-in; the default is `off`.
+menu does nothing.
 
-**`blink`** drives the keyboard's **Scroll Lock LED**, chosen over the Pi's board
-light because it is under your fingers rather than in your bag, and over Caps
-and Num Lock because nothing else in the system uses Scroll Lock.
+Set `led` to `on` and **`^L` counts it out** on the keyboard's **Scroll Lock
+LED** — chosen over the Pi's board light because it is under your fingers rather
+than in your bag, and over Caps and Num Lock because nothing else in the system
+uses Scroll Lock.
 
-| Signal | Meaning |
-|--------|---------|
-| long slow pulse | writing |
-| fast flutter | a menu is waiting — deliberately the most urgent rhythm, since typing here does nothing |
-| even medium beat | browsing entries |
-| short mark, long gap | reading an entry |
-| quick pips | settings |
-| single flash | an autosave just fsynced |
+| Flashes | Where you are |
+|---------|---------------|
+| 1 | writing |
+| 2 | menu |
+| 3 | browsing entries |
+| 4 | settings |
+| 5 | reading an entry |
 
-The kernel's `timer` LED trigger maintains the rhythm, so the app writes two
-small sysfs files on screen changes only and never on the keystroke path.
+There is a clear pause either side of the count so you know where it starts and
+ends. The two screens you are in most often are the fewest to count.
+
+**Nothing signals on its own.** No rhythm while you write, no flash on save. The
+LED is dark and handed back to its normal Scroll Lock function except for the
+two seconds after you ask — counting is unambiguous where judging a tempo is
+not, and an indicator that blinks at you unprompted is the opposite of what this
+device is for. `LedSignalling` in the test suite asserts that a whole session of
+writing, autosaving, browsing and reading produces no LED activity at all
+without a keypress.
+
+One implementation note, since it cost a debugging round: brightness must be
+written *before* restoring the trigger. Writing brightness while a trigger owns
+the LED clears that trigger straight back to `none`, silently undoing the
+handback.
 
 Driving the keyboard's **RGB backlight** by colour instead was attempted and
 abandoned. The keyboard acknowledges every packet and echoes the payload back but
@@ -174,17 +187,12 @@ Any integration has to be on demand only — a colour set on every screen change
 would put thousands of writes a month through a part rated for tens of thousands
 total.
 
-### The compass — `^L`
+### Why `^L` and not `l`
 
-Press `^L` to ask where you are: a countable number of flashes — write 1, menu 2,
-browse 3, settings 4, reading 5 — with a pause either side so you know where the
-count starts. Counting is unambiguous in a way that judging a rhythm's tempo is
-not.
-
-It is `^L` and not `l` while writing, because that is a writing surface and a
-bare letter has to stay a letter. Plain `l` also works in the menus, where it is
-free. `^L` conventionally means redraw, which the loop already does, so the
-compass comes free with it.
+Writing mode is a writing surface, so a bare letter has to stay a letter — `l`
+there must type an `l`. Plain `l` does work in the menus, where it is free.
+`^L` conventionally means redraw, which the loop already does, so the compass
+comes free with it.
 
 ## Design notes
 

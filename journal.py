@@ -64,14 +64,13 @@ PAPERS = ["off", "ruled", "margin"]
 RULE_CHAR = "\u2500"           # box drawings light horizontal
 MARGIN_CHAR = "\u2502"         # box drawings light vertical
 
-# How the app tells you which screen it is on with no display attached: the
-# keyboard's Scroll Lock LED, an ambient rhythm per screen plus a countable
-# compass on demand. Under your fingers rather than in your bag, and nothing
-# else in the system uses Scroll Lock.
+# Whether ^L blinks out which screen you are on, for use with no display
+# attached. Nothing blinks unless you ask: the LED is dark, and handed back to
+# its normal Scroll Lock function, the rest of the time.
 #
-# Driving the keyboard's RGB backlight instead was tried and abandoned; see
-# device/journal-rgb for the protocol and what was ruled out.
-LEDS = ["off", "blink"]
+# Driving the keyboard's RGB backlight by colour instead was tried and
+# abandoned; see device/journal-rgb for the protocol and what was ruled out.
+LEDS = ["off", "on"]
 LED_HELPER = "/usr/local/bin/journal-led"
 
 DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
@@ -174,26 +173,14 @@ def run_helper(helper, args):
         pass
 
 
-def led(cfg, *args):
-    """Ambient signalling on the Scroll Lock LED: a rhythm per screen, a flash
-    on save, and handing the LED back on exit.
-
-    Only in "blink" mode. In "color" mode nothing happens here on purpose --
-    every write to the RGB backlight is persisted by the keyboard, so the
-    backlight is touched only when explicitly asked for.
-
-    The kernel's timer trigger maintains the rhythm, so this runs on screen
-    changes only, never on the keystroke path."""
-    if DEV or cfg.get("led", "off") != "blink":
-        return
-    run_helper(LED_HELPER, args)
-
-
 def compass(cfg, where):
-    """Answer "where am I", on demand, when there is no display: a countable
-    number of flashes naming the screen. Counting is unambiguous in a way that
-    judging a rhythm's tempo is not, so this is the one to reach for when you
-    have lost your place."""
+    """Answer "where am I", on demand, when there is no display: one flash for
+    writing, two for the menu, and so on.
+
+    The only thing that touches the LED. Nothing signals on its own -- no
+    rhythm while you write, no flash on save -- so the device stays silent
+    unless asked. The helper backgrounds the blinking, so this never delays a
+    keystroke."""
     if DEV or cfg.get("led", "off") == "off":
         return
     run_helper(LED_HELPER, ["compass", where])
@@ -329,7 +316,6 @@ def menu(stdscr, cfg):
             return items[sel]
 
 def write_mode(stdscr, cfg):
-    led(cfg, "write")
     path = today_path()
     text = read_file(path) if os.path.exists(path) else ""
     paras = text.split("\n")
@@ -394,7 +380,6 @@ def write_mode(stdscr, cfg):
             if dirty and time.time() - last_save > cfg["autosave"]:
                 save_text("\n".join(paras), path)
                 dirty, last_save, need_draw = False, time.time(), True
-                led(cfg, "save")
             continue
 
         need_draw = True
@@ -434,7 +419,6 @@ def write_mode(stdscr, cfg):
             dirty = True
 
 def read_entry(stdscr, cfg, path):
-    led(cfg, "read")
     text = read_file(path)
     offset = 0
     stdscr.timeout(-1)
@@ -480,7 +464,6 @@ def browse(stdscr, cfg):
     files = entries()
     if not files:
         return
-    led(cfg, "browse")
     sel, top = 0, 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -524,10 +507,8 @@ def browse(stdscr, cfg):
             return
         elif ch in ("\n", "\r", curses.KEY_ENTER):
             read_entry(stdscr, cfg, os.path.join(JOURNAL_DIR, files[sel]))
-            led(cfg, "browse")      # read_entry changed it; put it back
 
 def settings(stdscr, cfg):
-    led(cfg, "settings")
     fields = ["theme", "font", "paper", "led", "width", "anchor", "autosave"]
     sel = 0
     stdscr.timeout(-1)
@@ -560,12 +541,9 @@ def settings(stdscr, cfg):
                 cfg[f] = PAPERS[(PAPERS.index(cfg[f]) + d) % len(PAPERS)]
             elif f == "led":
                 cfg[f] = LEDS[(LEDS.index(cfg[f]) + d) % len(LEDS)]
-                # Demonstrate the choice immediately, so it is legible with no
-                # screen.
-                if cfg[f] == "off":
-                    led(dict(cfg, led="blink"), "none")
-                else:
-                    led(cfg, "settings")
+                # Demonstrate it immediately, so the choice is legible with no
+                # screen: four flashes, which is where you are.
+                compass(cfg, "settings")
             elif f == "width":
                 cfg[f] = max(30, min(100, cfg[f] + d * 2))
             elif f == "anchor":
@@ -627,11 +605,7 @@ def power_off():
         subprocess.run(["sudo", "/sbin/poweroff"])
 
 
-def led_release(cfg):
-    """Hand the LED back to whatever normally owns it, so it does not keep
-    blinking a rhythm for an app that has exited."""
-    led(dict(cfg, led="state") if cfg.get("led", "off") != "off" else cfg,
-        "none")
+
 
 def main(stdscr):
     curses.use_default_colors()
@@ -640,11 +614,9 @@ def main(stdscr):
     apply_font(cfg)
     stdscr.keypad(True)
     while True:
-        led(cfg, "menu")
         choice = menu(stdscr, cfg)
         if choice == "Write":
             if write_mode(stdscr, cfg) == "off":
-                led_release(cfg)
                 power_off()
                 return
         elif choice == "Browse entries":
@@ -655,7 +627,6 @@ def main(stdscr):
         elif choice == "Hotspot":
             hotspot_screen(stdscr, cfg)
         elif choice == "Shut down":
-            led_release(cfg)
             power_off()
             return
 
