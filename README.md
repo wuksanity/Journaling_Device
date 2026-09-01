@@ -137,6 +137,67 @@ power cost.
 Requires the sudoers entry in [device/011_journal-console](device/011_journal-console),
 because `setfont` writes to root-owned `/dev/tty0`.
 
+### `led` — knowing where you are with no screen
+
+The point of writing on this thing screenless is that there is nothing to look
+at. But then nothing tells you which screen the app is on, and typing into a
+menu does nothing. Two answers, both opt-in; the default is `off`.
+
+**`blink`** drives the keyboard's **Scroll Lock LED**, chosen over the Pi's board
+light because it is under your fingers rather than in your bag, and over Caps
+and Num Lock because nothing else in the system uses Scroll Lock.
+
+| Signal | Meaning |
+|--------|---------|
+| long slow pulse | writing |
+| fast flutter | a menu is waiting — deliberately the most urgent rhythm, since typing here does nothing |
+| even medium beat | browsing entries |
+| short mark, long gap | reading an entry |
+| quick pips | settings |
+| single flash | an autosave just fsynced |
+
+The kernel's `timer` LED trigger maintains the rhythm, so the app writes two
+small sysfs files on screen changes only and never on the keystroke path.
+
+**`color`** sets the keyboard's **RGB backlight** to a colour naming the screen:
+green writing, blue menu, cyan browse, amber settings, violet reading. Read at a
+glance, no counting.
+
+**Colour is written only when you ask for it, with `^L`.** Every EVision lighting
+mode carries `MODE_FLAG_AUTOMATIC_SAVE`, meaning the keyboard persists each
+change to its own flash. Writing a colour on every screen change would put
+thousands of writes a month through a part rated for tens of thousands total. So
+in `color` mode there is no ambient signalling at all: one write per press, and
+the colour then stands as the answer to the last question you asked rather than a
+live readout. `tests/test_journal.py` has a `ColorModeWearsNothing` case that
+holds this to it.
+
+### The compass — `^L`
+
+Press `^L` to ask where you are. In `blink` mode you get a countable number of
+flashes — write 1, menu 2, browse 3, settings 4, reading 5 — with a pause either
+side so you know where the count starts. Counting is unambiguous in a way that
+judging a rhythm's tempo is not. In `color` mode the backlight simply turns the
+colour of the current screen.
+
+It is `^L` and not `l` while writing, because that is a writing surface and a
+bare letter has to stay a letter. Plain `l` also works in the menus, where it is
+free. `^L` conventionally means redraw, which the loop already does, so the
+compass comes free with it.
+
+### RGB protocol
+
+The keyboard is an EVision/Huafenda unit on a rebranded Sonix MCU
+(`320F:5084`), and its lighting is driven by 64-byte HID reports on vendor usage
+page `0xFF1C`, the second HID interface. OpenRGB's `EVisionKeyboardController`
+lists this exact product id, so rather than building OpenRGB — Qt and C++ on a
+512MB board — [device/journal-rgb](device/journal-rgb) implements just the
+packets needed, in standard-library Python. The format is documented in that
+file's docstring.
+
+The backlight is *not* addressable per key on this model through this path; the
+mode colour applies to the whole keyboard, which is all a state indicator needs.
+
 ## Design notes
 
 - **Append-only buffer.** There is no cursor movement into earlier text. This is

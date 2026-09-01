@@ -1,0 +1,14 @@
+# Lets the app set the keyboard's RGB backlight to a colour naming the current
+# screen. The hidraw node is root-owned.
+#
+# Separate from 010_poweroff so a mistake here cannot take away the ability to
+# shut the device down.
+#
+# Only this one wrapper is permitted, not general hidraw access, and the wrapper
+# accepts a fixed set of state names.
+#
+# Note: the app writes to the backlight only when you press ^L. Every EVision
+# lighting mode carries AUTOMATIC_SAVE, so the keyboard persists each change to
+# its own flash -- writing on every screen change would wear that memory out.
+
+walker ALL=(ALL) NOPASSWD: /usr/local/bin/journal-rgb

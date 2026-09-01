@@ -64,11 +64,20 @@ PAPERS = ["off", "ruled", "margin"]
 RULE_CHAR = "\u2500"           # box drawings light horizontal
 MARGIN_CHAR = "\u2502"         # box drawings light vertical
 
-# Blink rhythms telling you which screen you are on, so the device is navigable
-# with no display attached. "saves" additionally flashes on each autosave, at
-# the cost of a small subprocess every few seconds while writing.
-LEDS = ["off", "state", "saves"]
+# How the app tells you which screen it is on with no display attached.
+#
+#   blink  the keyboard's Scroll Lock LED: an ambient rhythm per screen, a
+#          flash on each autosave, and a countable compass on demand. Costs
+#          nothing but two sysfs writes on screen changes.
+#   color  the keyboard's RGB backlight, set ONLY when you ask for it with ^L.
+#          Every EVision lighting mode carries AUTOMATIC_SAVE, meaning the
+#          keyboard persists it to its own flash on every write -- so writing a
+#          colour on every screen change would wear that memory out. On demand
+#          means one write per press, and the colour then stands as the answer
+#          to the last question you asked, not a live readout.
+LEDS = ["off", "blink", "color"]
 LED_HELPER = "/usr/local/bin/journal-led"
+RGB_HELPER = "/usr/local/bin/journal-rgb"
 
 DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
             "led": "off", "width": 58, "anchor": 62, "autosave": 5}
@@ -161,32 +170,46 @@ def read_key(stdscr, timeout=250):
         return None
     return ch
 
-def led(cfg, *args):
-    """Drive the LED, so the app is navigable with no display attached.
-
-        led(cfg, "write")               ambient rhythm for a screen
-        led(cfg, "compass", "write")    countable blinks naming the screen
-        led(cfg, "save")                one flash confirming an fsync
-        led(cfg, "none")                hand the LED back
-
-    The kernel's timer trigger maintains the ambient rhythm, so this only runs
-    on screen changes, never on the keystroke path. The compass and save
-    flashes do sleep, so the helper backgrounds those."""
-    if DEV or cfg.get("led", "off") == "off":
-        return
+def run_helper(helper, args):
     try:
-        subprocess.run(["sudo", "-n", LED_HELPER] + list(args),
+        subprocess.run(["sudo", "-n", helper] + list(args),
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
                        timeout=5)
     except Exception:
         pass
 
 
+def led(cfg, *args):
+    """Ambient signalling on the Scroll Lock LED: a rhythm per screen, a flash
+    on save, and handing the LED back on exit.
+
+    Only in "blink" mode. In "color" mode nothing happens here on purpose --
+    every write to the RGB backlight is persisted by the keyboard, so the
+    backlight is touched only when explicitly asked for.
+
+    The kernel's timer trigger maintains the rhythm, so this runs on screen
+    changes only, never on the keystroke path."""
+    if DEV or cfg.get("led", "off") != "blink":
+        return
+    run_helper(LED_HELPER, args)
+
+
 def compass(cfg, where):
-    """Blink out which screen you are on, on demand. Counting flashes is
-    unambiguous in a way that judging a rhythm's tempo is not, so this is the
-    one to reach for when you have lost your place."""
-    led(cfg, "compass", where)
+    """Answer "where am I", on demand, when there is no display.
+
+    In blink mode: a countable number of flashes, unambiguous in a way that
+    judging a rhythm's tempo is not. In color mode: the backlight turns the
+    colour of the current screen -- read at a glance, no counting.
+
+    This is the only thing that writes to the RGB backlight, and it writes once
+    per press."""
+    mode = cfg.get("led", "off")
+    if DEV or mode == "off":
+        return
+    if mode == "color":
+        run_helper(RGB_HELPER, [where])
+    else:
+        run_helper(LED_HELPER, ["compass", where])
 
 
 def apply_font(cfg):
@@ -384,8 +407,7 @@ def write_mode(stdscr, cfg):
             if dirty and time.time() - last_save > cfg["autosave"]:
                 save_text("\n".join(paras), path)
                 dirty, last_save, need_draw = False, time.time(), True
-                if cfg.get("led", "off") == "saves":
-                    led(cfg, "save")
+                led(cfg, "save")
             continue
 
         need_draw = True
@@ -551,9 +573,13 @@ def settings(stdscr, cfg):
                 cfg[f] = PAPERS[(PAPERS.index(cfg[f]) + d) % len(PAPERS)]
             elif f == "led":
                 cfg[f] = LEDS[(LEDS.index(cfg[f]) + d) % len(LEDS)]
-                # Show the new setting immediately, so the choice is legible
-                # without a screen.
-                led(cfg, "settings" if cfg[f] != "off" else "none")
+                # Demonstrate the choice immediately, so it is legible with no
+                # screen. Uses the on-demand path, so picking "color" costs the
+                # same single write as pressing ^L would.
+                if cfg[f] == "off":
+                    led(dict(cfg, led="blink"), "none")
+                else:
+                    compass(cfg, "settings")
             elif f == "width":
                 cfg[f] = max(30, min(100, cfg[f] + d * 2))
             elif f == "anchor":

@@ -1,0 +1,184 @@
+#!/usr/bin/env python3
+"""Set the keyboard's RGB backlight to a colour naming the app's current screen.
+
+    journal-rgb write|menu|browse|read|settings|save|off
+    journal-rgb test              cycle every colour, 2s each
+    journal-rgb probe             report what it found, write nothing
+
+A colour is a better "where am I" signal than a blink rhythm: it is continuous
+and needs no counting.
+
+Protocol
+--------
+The keyboard is an EVision/Huafenda unit on a rebranded Sonix MCU. Lighting is
+driven by 64-byte HID output reports on the vendor usage page 0xFF1C, exposed as
+the second HID interface. Taken from OpenRGB's EVisionKeyboardController, which
+lists this exact product id (320F:5084):
+
+    byte 0x00        report id, always 0x04
+    byte 0x01..0x02  checksum, little endian: sum of bytes 0x03..0x3F
+    byte 0x03        command   0x01 begin, 0x02 end, 0x06 set parameter
+    byte 0x04        parameter payload length
+    byte 0x05        parameter id (0x00 = mode)
+    byte 0x08..      payload
+
+Parameter 0x00 takes eight bytes:
+
+    [mode, brightness, speed, direction, random_flag, red, green, blue]
+
+Writes are framed by a begin and an end packet, and the device replies to each
+one, so every write is followed by a read.
+
+Reference: https://github.com/CalcProgrammer1/OpenRGB
+           Controllers/EVisionKeyboardController/
+"""
+import glob
+import os
+import select
+import sys
+import time
+
+VENDOR = "320f"
+PRODUCT = "5084"
+
+REPORT_ID = 0x04
+CMD_BEGIN = 0x01
+CMD_END = 0x02
+CMD_SET_PARAMETER = 0x06
+PARAM_MODE = 0x00
+
+MODE_STATIC = 0x06          # "Normally on"
+MODE_SPECTRUM_CYCLE = 0x04  # the idle rainbow, for handing the keyboard back
+
+BRIGHT_OFF = 0x00
+BRIGHT_MAX = 0x04
+SPEED_NORMAL = 0x03
+
+# One colour per screen. Chosen to be distinguishable at a glance rather than
+# pretty: green means the keystrokes are going into the document.
+STATES = {
+    "write":    (0x00, 0xFF, 0x30, BRIGHT_MAX),      # green
+    "menu":     (0x20, 0x40, 0xFF, BRIGHT_MAX),      # blue
+    "browse":   (0x00, 0xE0, 0xFF, BRIGHT_MAX),      # cyan
+    "settings": (0xFF, 0xB0, 0x00, BRIGHT_MAX),      # amber
+    "read":     (0xC0, 0x40, 0xFF, BRIGHT_MAX),      # violet
+    "save":     (0xFF, 0xFF, 0xFF, BRIGHT_MAX),      # white blip
+}
+
+
+def find_device():
+    """The lighting lives on the interface carrying usage page 0xFF1C, which is
+    the second HID interface, not the one delivering keystrokes."""
+    candidates = []
+    for path in sorted(glob.glob("/sys/class/hidraw/hidraw*")):
+        node = "/dev/" + os.path.basename(path)
+        uevent = os.path.join(path, "device", "uevent")
+        try:
+            with open(uevent) as f:
+                info = f.read()
+        except OSError:
+            continue
+        if ("%s:%s" % (VENDOR, PRODUCT)).lower() not in info.lower():
+            # HID_ID looks like "3:0000320F:00005084"
+            if VENDOR.upper() not in info.upper() or PRODUCT.upper() not in info.upper():
+                continue
+        # Prefer the higher interface number; interface 0 is the keyboard.
+        iface = 0
+        for line in info.splitlines():
+            if line.startswith("HID_PHYS=") and "input" in line:
+                try:
+                    iface = int(line.rsplit("input", 1)[1])
+                except ValueError:
+                    pass
+        candidates.append((iface, node))
+    if not candidates:
+        return None
+    candidates.sort()
+    return candidates[-1][1]
+
+
+def checksum(buf, signed=False):
+    total = 0
+    for b in buf[0x03:]:
+        total += (b - 256) if (signed and b > 0x7F) else b
+    return total & 0xFFFF
+
+
+def packet(command, param=None, payload=b"", signed=False):
+    buf = bytearray(64)
+    buf[0x00] = REPORT_ID
+    buf[0x03] = command
+    if param is not None:
+        buf[0x04] = len(payload)
+        buf[0x05] = param
+        buf[0x08:0x08 + len(payload)] = payload
+    total = checksum(buf, signed)
+    buf[0x01] = total & 0xFF
+    buf[0x02] = (total >> 8) & 0xFF
+    return bytes(buf)
+
+
+def send(fd, data):
+    os.write(fd, data)
+    # The device answers every packet. Drain it so the next write is not read as
+    # a reply to this one.
+    r, _, _ = select.select([fd], [], [], 0.25)
+    if r:
+        try:
+            os.read(fd, 64)
+        except OSError:
+            pass
+
+
+def apply_mode(node, mode, brightness, rgb, signed=False):
+    fd = os.open(node, os.O_RDWR | os.O_NONBLOCK)
+    try:
+        send(fd, packet(CMD_BEGIN, signed=signed))
+        payload = bytes([mode, brightness, SPEED_NORMAL, 0x00, 0x00,
+                         rgb[0], rgb[1], rgb[2]])
+        send(fd, packet(CMD_SET_PARAMETER, PARAM_MODE, payload, signed=signed))
+        send(fd, packet(CMD_END, signed=signed))
+    finally:
+        os.close(fd)
+
+
+def main(argv):
+    what = argv[1] if len(argv) > 1 else "probe"
+    signed = "--signed" in argv
+
+    node = find_device()
+    if node is None:
+        print("no EVision keyboard (%s:%s) hidraw node found" % (VENDOR, PRODUCT),
+              file=sys.stderr)
+        return 1
+
+    if what == "probe":
+        print(node)
+        return 0
+
+    if what == "test":
+        for name in ("write", "menu", "browse", "settings", "read"):
+            r, g, b, bright = STATES[name]
+            print("  %-9s rgb(%3d,%3d,%3d)" % (name, r, g, b))
+            apply_mode(node, MODE_STATIC, bright, (r, g, b), signed)
+            time.sleep(2)
+        apply_mode(node, MODE_STATIC, BRIGHT_MAX, STATES["write"][:3], signed)
+        return 0
+
+    if what in ("off", "none"):
+        # Hand the keyboard back to its own idle animation rather than leaving
+        # it dark, so a stopped app looks like a keyboard and not a fault.
+        apply_mode(node, MODE_SPECTRUM_CYCLE, BRIGHT_MAX, (0, 0, 0), signed)
+        return 0
+
+    if what not in STATES:
+        print("unknown state: %s" % what, file=sys.stderr)
+        return 2
+
+    r, g, b, bright = STATES[what]
+    apply_mode(node, MODE_STATIC, bright, (r, g, b), signed)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main(sys.argv))

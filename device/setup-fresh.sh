@@ -69,6 +69,23 @@ else
     echo "  /tmp/journal-led not staged, skipping"
 fi
 
+say "rgb backlight signalling"
+# Optional: sets the keyboard backlight to a colour naming the current screen,
+# on demand only. Harmless if the keyboard is a different model -- the helper
+# reports no device and exits.
+if [ -f /tmp/journal-rgb ]; then
+    sudo install -m 755 -o root -g root /tmp/journal-rgb /usr/local/bin/journal-rgb
+    if [ -f /tmp/013_journal-rgb ] && sudo visudo -cf /tmp/013_journal-rgb >/dev/null; then
+        sudo install -m 440 -o root -g root /tmp/013_journal-rgb \
+            /etc/sudoers.d/013_journal-rgb
+        echo "  installed, device: $(sudo -n /usr/local/bin/journal-rgb probe 2>&1 || echo 'none found')"
+    else
+        echo "  sudoers file missing or failed visudo -c" >&2
+    fi
+else
+    echo "  /tmp/journal-rgb not staged, skipping"
+fi
+
 say "console font permission"
 # The font setting in journal.py calls setfont, which writes to root-owned
 # /dev/tty0. Validate before installing: a bad file here breaks sudo entirely.
