@@ -11,6 +11,32 @@ CONFIG_PATH = os.path.expanduser(
     "~/.journal-config-dev.json" if DEV else "~/.journal-config.json")
 
 THEMES = ["night", "paper", "amber", "green", "ocean"]
+# 256-colour equivalents, used when the terminal has them. tmux advertises
+# tmux-256color to the app, so on this device it does; a bare console or
+# TERM=screen reports 8 and falls back to THEME_COLORS below.
+#
+# For the paper theme these are the difference between something that looks
+# like a sheet of ruled paper and something that looks like underlined text:
+# warm off-white ground, soft graphite ink, and a rule in notebook blue rather
+# than in the text colour.
+THEME_COLORS_256 = {
+    "paper": (236, 230),        # graphite on warm cream
+    "night": (252, 234),        # soft white on near-black
+    "amber": (215, 233),        # amber on near-black
+    "green": (114, 233),        # muted green on near-black
+    "ocean": (152, 24),         # pale cyan on deep blue
+}
+
+# (rule, margin) per theme. The rule is the ruled line; the margin is the
+# vertical mark down the left edge.
+PAPER_COLORS_256 = {
+    "paper": (110, 174),        # notebook blue, dusty rose
+    "night": (60, 96),
+    "amber": (94, 130),
+    "green": (65, 100),
+    "ocean": (67, 97),
+}
+
 THEME_COLORS = {
     "paper": (curses.COLOR_BLACK, curses.COLOR_WHITE),
     "night": (curses.COLOR_WHITE, curses.COLOR_BLACK),
@@ -29,7 +55,14 @@ FONT_FAMILY = "Uni2-Terminus%s"     # Uni2 covers the widest charset of the set
 # including the empty ones below the cursor, which is what makes the page read
 # as ruled rather than just underlined text. "margin" adds a notebook rule down
 # the left edge.
-PAPERS = ["off", "lined", "margin"]
+# "ruled" draws real lines: text on every other row with a ruled line beneath
+# it, so the page has the spacing of a notebook rather than an underline under
+# every row. It halves how many lines fit on screen, which is the honest cost of
+# looking like paper -- and no great loss on a device where you only ever write
+# at the bottom. "margin" adds the vertical mark down the left edge.
+PAPERS = ["off", "ruled", "margin"]
+RULE_CHAR = "\u2500"           # box drawings light horizontal
+MARGIN_CHAR = "\u2502"         # box drawings light vertical
 
 # Blink rhythms telling you which screen you are on, so the device is navigable
 # with no display attached. "saves" additionally flashes on each autosave, at
@@ -43,6 +76,13 @@ DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
 AP_NAME = "journal-ap"
 AP_GATEWAY = "10.42.0.1"
 
+# Settings whose value has to be one of a fixed list. A config written by an
+# older version can name a mode that no longer exists, and the settings screen
+# looks the value up by index, so an unknown one would raise there rather than
+# here.
+ENUMS = {"theme": THEMES, "font": FONTS, "paper": PAPERS, "led": LEDS}
+
+
 def load_config():
     cfg = dict(DEFAULTS)
     try:
@@ -50,6 +90,12 @@ def load_config():
             cfg.update(json.load(f))
     except Exception:
         pass
+    for key, allowed in ENUMS.items():
+        if cfg.get(key) not in allowed:
+            cfg[key] = DEFAULTS[key]
+    for key in ("width", "anchor", "autosave"):
+        if not isinstance(cfg.get(key), int) or isinstance(cfg.get(key), bool):
+            cfg[key] = DEFAULTS[key]
     return cfg
 
 def save_config(cfg):
@@ -158,39 +204,82 @@ def apply_font(cfg):
         pass
 
 
-def paper_attr(cfg):
-    """The ruling is an underline attribute rather than drawn characters, so it
-    costs no rows and cannot collide with the text."""
-    return curses.A_UNDERLINE if cfg.get("paper", "off") != "off" else 0
+def pair(n):
+    """color_pair needs an initialised screen, and start_color can fail. Fall
+    back to plain so drawing never depends on colour being available."""
+    try:
+        return curses.color_pair(n)
+    except Exception:
+        return 0
+
+
+def is_ruled(cfg):
+    return cfg.get("paper", "off") in ("ruled", "margin")
+
+
+def line_capacity(cfg, rows):
+    """How many lines of text fit in `rows` screen rows. Ruled pages spend
+    every other row on a line, so callers must slice the text to this."""
+    if is_ruled(cfg):
+        return max(1, (rows + 1) // 2)
+    return max(1, rows)
 
 
 def draw_page(stdscr, cfg, view, top, left, col, rows):
-    """Draw `rows` screen rows starting at `top`, ruled if the setting asks for
-    it. Short lines are padded to the column width so the rule runs the full
-    measure, and rows past the end of the text are drawn as blank ruled lines."""
-    rule = paper_attr(cfg)
+    """Draw the page: text, and if ruled, a line beneath each row of it.
+
+    The rule is drawn as characters in their own colour rather than as an
+    underline attribute, because an underline takes the text colour and reads
+    as emphasis. A separate row in notebook blue reads as paper."""
+    ruled = is_ruled(cfg)
     margin = cfg.get("paper", "off") == "margin"
-    for i in range(rows):
-        line = view[i] if i < len(view) else ""
+    rule_attr = pair(2) if ruled else 0
+    margin_attr = pair(3) | curses.A_DIM
+
+    def put(y, x, s, attr=0):
+        if y < top or y >= top + rows:
+            return
         try:
-            if rule:
-                stdscr.addstr(top + i, left, line[:col].ljust(col), rule)
-            else:
-                stdscr.addstr(top + i, left, line[:col])
+            stdscr.addstr(y, x, s, attr)
         except curses.error:
             pass
-        if margin and left >= 2:
-            try:
-                stdscr.addstr(top + i, left - 2, "\u2502", curses.A_DIM)
-            except curses.error:
-                pass
+
+    if ruled:
+        for i in range(line_capacity(cfg, rows)):
+            y = top + i * 2
+            put(y, left, (view[i] if i < len(view) else "")[:col])
+            put(y + 1, left, RULE_CHAR * col, rule_attr)
+    else:
+        for i in range(rows):
+            put(top + i, left, (view[i] if i < len(view) else "")[:col])
+
+    if margin and left >= 2:
+        for i in range(rows):
+            put(top + i, left - 2, MARGIN_CHAR, margin_attr)
 
 
 def apply_theme(stdscr, cfg):
+    """Pair 1 is the page, 2 the ruled lines, 3 the margin mark. Drawing the
+    rules in their own colour is what stops them reading as underlined text."""
     try:
         curses.start_color()
-        fg, bg = THEME_COLORS.get(cfg["theme"], THEME_COLORS["night"])
+        theme = cfg["theme"] if cfg["theme"] in THEME_COLORS else "night"
+        rich = getattr(curses, "COLORS", 8) >= 256
+
+        if rich:
+            fg, bg = THEME_COLORS_256.get(theme, THEME_COLORS_256["night"])
+            rule, margin = PAPER_COLORS_256.get(theme,
+                                                PAPER_COLORS_256["night"])
+        else:
+            fg, bg = THEME_COLORS[theme]
+            # Only eight colours: the rule borrows blue, or falls back to the
+            # text colour when blue is already the ground.
+            rule = curses.COLOR_BLUE if bg != curses.COLOR_BLUE else fg
+            margin = curses.COLOR_RED if bg != curses.COLOR_RED else fg
+
         curses.init_pair(1, fg, bg)
+        curses.init_pair(2, rule, bg)
+        curses.init_pair(3, margin, bg)
         stdscr.bkgd(" ", curses.color_pair(1))
     except Exception:
         pass
@@ -258,9 +347,10 @@ def write_mode(stdscr, cfg):
             if len(cache) > len(paras) + 16:
                 cache = {k: v for k, v in cache.items() if k < len(paras)}
 
-            anchor = max(1, int(body_h * cfg["anchor"] / 100))
+            fits = line_capacity(cfg, body_h)
+            anchor = max(1, int(fits * cfg["anchor"] / 100))
             start = max(0, len(lines) - anchor)
-            view = lines[start:start + body_h]
+            view = lines[start:start + fits]
 
             stdscr.erase()
             try:
@@ -348,14 +438,15 @@ def read_entry(stdscr, cfg, path):
         for para in text.split("\n"):
             lines.extend(wrap_para(para, col))
         body_h = max(1, h - 2)
-        max_off = max(0, len(lines) - body_h)
+        fits = line_capacity(cfg, body_h)
+        max_off = max(0, len(lines) - fits)
         offset = min(offset, max_off)
         stdscr.erase()
         try:
             stdscr.addstr(0, left, os.path.basename(path)[:-3], curses.A_DIM)
         except curses.error:
             pass
-        draw_page(stdscr, cfg, lines[offset:offset + body_h], 1, left, col, body_h)
+        draw_page(stdscr, cfg, lines[offset:offset + fits], 1, left, col, body_h)
         centered(stdscr, h - 1, "arrows to scroll    q to go back", curses.A_DIM)
         stdscr.refresh()
         ch = read_key(stdscr, -1)
@@ -368,9 +459,9 @@ def read_entry(stdscr, cfg, path):
         elif ch == curses.KEY_UP:
             offset = max(0, offset - 1)
         elif ch == curses.KEY_NPAGE:
-            offset = min(max_off, offset + (h - 3))
+            offset = min(max_off, offset + max(1, fits - 1))
         elif ch == curses.KEY_PPAGE:
-            offset = max(0, offset - (h - 3))
+            offset = max(0, offset - max(1, fits - 1))
         elif ch == curses.KEY_HOME:
             offset = 0
         elif ch == curses.KEY_END:

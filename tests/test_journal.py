@@ -8,6 +8,7 @@ The curses UI functions are driven through a fake stdscr that records what was
 drawn, so the browse/read_entry viewport behaviour is tested for real rather
 than by re-implementing the arithmetic here.
 """
+import json
 import os
 import sys
 import shutil
@@ -332,59 +333,93 @@ class Config(unittest.TestCase):
 
 
 class RuledPaper(unittest.TestCase):
-    """The ruling is an underline attribute on a space-padded line, so it costs
-    no rows. The padding is what makes the rule span the full measure instead
-    of stopping at the end of the text."""
+    """Ruled pages put text on every other row with a drawn line beneath it.
+    The line is characters in their own colour, not an underline attribute --
+    an underline takes the text colour and reads as emphasis rather than paper."""
 
     def cfg(self, paper):
         c = dict(journal.DEFAULTS)
         c["paper"] = paper
         return c
 
-    def test_attr_is_off_by_default(self):
-        self.assertEqual(journal.DEFAULTS["paper"], "off")
-        self.assertEqual(journal.paper_attr(journal.DEFAULTS), 0)
+    def rows_at(self, scr, y):
+        return [s for dy, x, s, attr in scr.drawn if dy == y]
 
-    def test_attr_set_for_lined_and_margin(self):
-        for p in ("lined", "margin"):
-            self.assertEqual(journal.paper_attr(self.cfg(p)),
-                             curses.A_UNDERLINE, p)
+    def test_off_by_default(self):
+        self.assertEqual(journal.DEFAULTS["paper"], "off")
+        self.assertFalse(journal.is_ruled(journal.DEFAULTS))
+
+    def test_both_ruled_modes_are_ruled(self):
+        for p in ("ruled", "margin"):
+            self.assertTrue(journal.is_ruled(self.cfg(p)), p)
 
     def test_missing_key_does_not_raise(self):
-        # An older config file will not have the key.
-        self.assertEqual(journal.paper_attr({}), 0)
+        # A config written by an older version will not have the key.
+        self.assertFalse(journal.is_ruled({}))
 
-    def test_unruled_lines_are_not_padded(self):
+    def test_ruling_halves_the_line_capacity(self):
+        self.assertEqual(journal.line_capacity(self.cfg("off"), 22), 22)
+        self.assertEqual(journal.line_capacity(self.cfg("ruled"), 22), 11)
+        self.assertEqual(journal.line_capacity(self.cfg("margin"), 21), 11)
+
+    def test_capacity_never_drops_below_one(self):
+        for mode in ("off", "ruled", "margin"):
+            self.assertGreaterEqual(journal.line_capacity(self.cfg(mode), 1), 1)
+
+    def test_unruled_draws_text_on_consecutive_rows(self):
         scr = FakeScr()
-        journal.draw_page(scr, self.cfg("off"), ["short"], 1, 5, 40, 3)
-        drawn = [s for y, x, s, attr in scr.drawn]
-        self.assertEqual(drawn[0], "short")
-        self.assertTrue(all(a == 0 for y, x, s, a in scr.drawn))
+        journal.draw_page(scr, self.cfg("off"), ["one", "two"], 1, 5, 40, 3)
+        self.assertEqual(self.rows_at(scr, 1), ["one"])
+        self.assertEqual(self.rows_at(scr, 2), ["two"])
+        self.assertNotIn(journal.RULE_CHAR,
+                         "".join(s for y, x, s, a in scr.drawn))
 
-    def test_ruled_lines_are_padded_to_the_full_column(self):
-        col = 40
+    def test_ruled_puts_a_line_under_each_text_row(self):
+        col = 30
         scr = FakeScr()
-        journal.draw_page(scr, self.cfg("lined"), ["short"], 1, 5, col, 3)
-        for y, x, s, attr in scr.drawn:
-            self.assertEqual(len(s), col, "every ruled row spans the column")
-            self.assertTrue(attr & curses.A_UNDERLINE)
+        journal.draw_page(scr, self.cfg("ruled"), ["one", "two"], 1, 5, col, 6)
+        self.assertEqual(self.rows_at(scr, 1), ["one"])       # text
+        self.assertEqual(self.rows_at(scr, 2), [journal.RULE_CHAR * col])
+        self.assertEqual(self.rows_at(scr, 3), ["two"])       # next text
+        self.assertEqual(self.rows_at(scr, 4), [journal.RULE_CHAR * col])
 
-    def test_rows_past_the_text_are_still_ruled(self):
-        # This is what makes it read as ruled paper rather than underlined text.
-        rows = 6
+    def test_the_rule_spans_the_full_column(self):
+        for col in (20, 40, 58):
+            scr = FakeScr()
+            journal.draw_page(scr, self.cfg("ruled"), ["x"], 1, 3, col, 4)
+            rules = [s for y, x, s, a in scr.drawn if journal.RULE_CHAR in s]
+            self.assertTrue(rules)
+            for r in rules:
+                self.assertEqual(len(r), col)
+
+    def test_rules_continue_past_the_end_of_the_text(self):
+        # An empty page is still a ruled page; that is what makes it paper.
+        rows = 8
         scr = FakeScr()
-        journal.draw_page(scr, self.cfg("lined"), ["one"], 1, 5, 30, rows)
-        ruled = [s for y, x, s, attr in scr.drawn if attr & curses.A_UNDERLINE]
-        self.assertEqual(len(ruled), rows)
-        self.assertEqual(ruled[-1].strip(), "", "trailing rows are blank but ruled")
+        journal.draw_page(scr, self.cfg("ruled"), [], 1, 5, 30, rows)
+        rules = [s for y, x, s, a in scr.drawn if journal.RULE_CHAR in s]
+        self.assertEqual(len(rules), journal.line_capacity(self.cfg("ruled"), rows))
 
-    def test_margin_draws_a_rule_left_of_the_column(self):
+    def test_nothing_is_drawn_outside_the_given_rows(self):
+        top, rows = 1, 5
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("margin"), ["a"] * 20, top, 5, 30, rows)
+        ys = [y for y, x, s, a in scr.drawn]
+        self.assertTrue(all(top <= y < top + rows for y in ys), sorted(set(ys)))
+
+    def test_margin_marks_every_row(self):
+        left, rows = 8, 4
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("margin"), ["x"], 1, left, 30, rows)
+        margin = [s for y, x, s, a in scr.drawn if x == left - 2]
+        self.assertEqual(len(margin), rows)
+        self.assertEqual(set(margin), {journal.MARGIN_CHAR})
+
+    def test_ruled_alone_draws_no_margin(self):
         left = 8
         scr = FakeScr()
-        journal.draw_page(scr, self.cfg("margin"), ["x"], 1, left, 30, 4)
-        margin = [(y, x, s) for y, x, s, attr in scr.drawn if x == left - 2]
-        self.assertEqual(len(margin), 4, "one margin mark per row")
-        self.assertEqual(margin[0][2], "│")
+        journal.draw_page(scr, self.cfg("ruled"), ["x"], 1, left, 30, 4)
+        self.assertEqual([s for y, x, s, a in scr.drawn if x == left - 2], [])
 
     def test_margin_is_skipped_when_there_is_no_room(self):
         scr = FakeScr()
@@ -394,8 +429,61 @@ class RuledPaper(unittest.TestCase):
     def test_long_lines_are_truncated_to_the_column(self):
         col = 20
         scr = FakeScr()
-        journal.draw_page(scr, self.cfg("lined"), ["y" * 100], 1, 2, col, 1)
-        self.assertEqual(len(scr.drawn[0][2]), col)
+        journal.draw_page(scr, self.cfg("ruled"), ["y" * 100], 1, 2, col, 2)
+        text = [s for y, x, s, a in scr.drawn if journal.RULE_CHAR not in s]
+        self.assertEqual(len(text[0]), col)
+
+    def test_the_rule_is_not_an_underline_attribute(self):
+        # The point of the rework: emphasis is not paper.
+        scr = FakeScr()
+        journal.draw_page(scr, self.cfg("ruled"), ["x"], 1, 5, 20, 4)
+        self.assertFalse(any(a & curses.A_UNDERLINE for y, x, s, a in scr.drawn))
+
+
+class StaleConfig(unittest.TestCase):
+    """The settings screen looks enum values up by index, so a value that no
+    longer exists has to be corrected on load, not left to raise there."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._real = journal.CONFIG_PATH
+        journal.CONFIG_PATH = os.path.join(self.dir, "cfg.json")
+
+    def tearDown(self):
+        journal.CONFIG_PATH = self._real
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def write(self, obj):
+        with open(journal.CONFIG_PATH, "w") as f:
+            json.dump(obj, f)
+
+    def test_retired_paper_mode_falls_back(self):
+        # "lined" was the old underline-based mode.
+        self.write({"paper": "lined"})
+        self.assertEqual(journal.load_config()["paper"], journal.DEFAULTS["paper"])
+
+    def test_unknown_values_fall_back_for_every_enum(self):
+        self.write({"theme": "zzz", "font": "zzz", "paper": "zzz", "led": "zzz"})
+        cfg = journal.load_config()
+        for key in ("theme", "font", "paper", "led"):
+            self.assertEqual(cfg[key], journal.DEFAULTS[key], key)
+
+    def test_valid_values_are_kept(self):
+        self.write({"theme": "paper", "paper": "margin", "led": "saves"})
+        cfg = journal.load_config()
+        self.assertEqual(cfg["theme"], "paper")
+        self.assertEqual(cfg["paper"], "margin")
+        self.assertEqual(cfg["led"], "saves")
+
+    def test_non_integer_numbers_fall_back(self):
+        self.write({"width": "wide", "anchor": None, "autosave": True})
+        cfg = journal.load_config()
+        for key in ("width", "anchor", "autosave"):
+            self.assertEqual(cfg[key], journal.DEFAULTS[key], key)
+
+    def test_every_enum_default_is_in_its_list(self):
+        for key, allowed in journal.ENUMS.items():
+            self.assertIn(journal.DEFAULTS[key], allowed, key)
 
 
 class ConsoleFont(unittest.TestCase):

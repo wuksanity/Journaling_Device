@@ -92,22 +92,33 @@ Adjustable in-app and persisted to JSON.
 
 ### `paper` — ruled background
 
-`lined` underlines the full width of the text column on every row, including the
-empty rows below the cursor. Padding short lines out to the column width is what
-makes it read as ruled paper rather than as underlined text. `margin` adds a
-`│` rule down the left edge, like a notebook. Pairs best with the `paper` theme.
+`ruled` draws real lines: text on every other row with a ruled line directly
+beneath it, so the page has the spacing of a notebook. `margin` adds a vertical
+mark down the left edge. Both pair best with the `paper` theme.
 
-It costs no rows and cannot collide with the text, because the rule is a
-character attribute rather than drawn characters.
+The rule is **characters in their own colour**, not an underline attribute. An
+underline takes the text colour, which reads as emphasis — underlined text
+rather than paper. A separate row in notebook blue reads as a ruled sheet.
 
-Verified with `tools/pty_probe.py`: under `tmux-256color` and `screen` — the
-terminfo the app actually gets inside tmux, both on the console and over SSH —
-`lined` and `margin` emit the underline attribute and `off` does not.
+With 256 colours available the palette does the rest:
 
-One caveat if you ever run the app outside tmux on the physical console: the
-`linux` terminfo sets `ncv#18`, marking underline as unusable alongside colour,
-so ncurses drops it and the ruling silently disappears. Inside tmux this does
-not arise.
+| Theme | Ground | Ink | Rule |
+|-------|--------|-----|------|
+| `paper` | warm cream (230) | graphite (236) | notebook blue (110) |
+| `night` | near-black (234) | soft white (252) | blue-grey (60) |
+
+Terminals reporting only 8 colours fall back to the basic palette, borrowing
+blue for the rule. `tmux` advertises `tmux-256color` to the app, so on this
+device the full palette applies; a bare console outside tmux reports 8.
+
+**Ruling halves how many lines fit on screen**, since every other row is a line.
+That is the honest cost of looking like paper, and little loss on a device where
+you only ever write at the bottom. `line_capacity()` is the single place that
+knows this, and the writing and reading screens both slice their text to it.
+
+Verified end to end with `tools/pty_render.py`, which runs the app in a real pty
+and replays the escape output into a character grid, so the layout can be
+inspected rather than assumed.
 
 ### `font` — console font size
 
