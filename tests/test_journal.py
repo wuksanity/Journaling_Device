@@ -463,17 +463,16 @@ class StaleConfig(unittest.TestCase):
         self.assertEqual(journal.load_config()["paper"], journal.DEFAULTS["paper"])
 
     def test_unknown_values_fall_back_for_every_enum(self):
-        self.write({"theme": "zzz", "font": "zzz", "paper": "zzz", "led": "zzz"})
+        self.write({"theme": "zzz", "font": "zzz", "paper": "zzz"})
         cfg = journal.load_config()
-        for key in ("theme", "font", "paper", "led"):
+        for key in ("theme", "font", "paper"):
             self.assertEqual(cfg[key], journal.DEFAULTS[key], key)
 
     def test_valid_values_are_kept(self):
-        self.write({"theme": "paper", "paper": "margin", "led": "on"})
+        self.write({"theme": "paper", "paper": "margin"})
         cfg = journal.load_config()
         self.assertEqual(cfg["theme"], "paper")
         self.assertEqual(cfg["paper"], "margin")
-        self.assertEqual(cfg["led"], "on")
 
     def test_non_integer_numbers_fall_back(self):
         self.write({"width": "wide", "anchor": None, "autosave": True})
@@ -540,22 +539,40 @@ class LedSignalling(unittest.TestCase):
             journal.DEV = real_dev
         return calls
 
-    def on(self, mode="on"):
-        c = dict(journal.DEFAULTS)
-        c["led"] = mode
-        return c
+    def on(self, mode=None):
+        return dict(journal.DEFAULTS)
 
-    def test_default_is_off(self):
-        self.assertEqual(journal.DEFAULTS["led"], "off")
-        self.assertIn(journal.DEFAULTS["led"], journal.LEDS)
+    def test_there_is_no_setting_to_switch_it_off(self):
+        # The compass is the only feedback this device has with nothing
+        # attached. A setting that can leave it silent is worse than none, and
+        # defaulting it off silently broke a real away-from-home test.
+        self.assertNotIn("led", journal.DEFAULTS)
+        self.assertNotIn("led", journal.ENUMS)
+        self.assertFalse(hasattr(journal, "LEDS"))
 
-    def test_the_setting_is_only_on_or_off(self):
-        self.assertEqual(journal.LEDS, ["off", "on"])
-
-    def test_nothing_runs_when_the_setting_is_off(self):
+    def test_it_works_on_a_default_config(self):
         calls = self.capture(lambda: journal.compass(dict(journal.DEFAULTS),
                                                      "write"))
-        self.assertEqual(calls, [])
+        self.assertEqual(len(calls), 1, "must work with no configuration")
+
+    def test_it_works_on_an_empty_config(self):
+        calls = self.capture(lambda: journal.compass({}, "menu"))
+        self.assertEqual(len(calls), 1)
+
+    def test_a_stale_led_key_does_not_disable_it(self):
+        # Configs written by earlier versions carry led=off / state / blink.
+        for stale in ("off", "state", "blink", "color", "nonsense"):
+            calls = self.capture(
+                lambda s=stale: journal.compass(dict(journal.DEFAULTS, led=s),
+                                                "write"))
+            self.assertEqual(len(calls), 1,
+                             "a stale led=%r must not silence the compass" % stale)
+
+    def test_the_settings_screen_does_not_offer_it(self):
+        scr = FakeScr(keys=["q"])
+        journal.settings(scr, dict(journal.DEFAULTS))
+        text = " ".join(s for y, x, s, attr in scr.drawn)
+        self.assertNotIn("led", text)
 
     def test_nothing_runs_under_dev(self):
         # Local development must not shell out to the device helper.

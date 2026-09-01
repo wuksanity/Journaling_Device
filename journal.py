@@ -64,17 +64,19 @@ PAPERS = ["off", "ruled", "margin"]
 RULE_CHAR = "\u2500"           # box drawings light horizontal
 MARGIN_CHAR = "\u2502"         # box drawings light vertical
 
-# Whether ^L blinks out which screen you are on, for use with no display
-# attached. Nothing blinks unless you ask: the LED is dark, and handed back to
-# its normal Scroll Lock function, the rest of the time.
+# ^L blinks out which screen you are on. Deliberately not a setting: it is the
+# only feedback this device has when nothing is attached to it, and an indicator
+# you can accidentally leave switched off is worse than no indicator at all.
+#
+# Nothing blinks unless you ask. The LED is dark, and handed back to its normal
+# Scroll Lock function, the rest of the time.
 #
 # Driving the keyboard's RGB backlight by colour instead was tried and
 # abandoned; see device/journal-rgb for the protocol and what was ruled out.
-LEDS = ["off", "on"]
 LED_HELPER = "/usr/local/bin/journal-led"
 
 DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
-            "led": "off", "width": 58, "anchor": 62, "autosave": 5}
+            "width": 58, "anchor": 62, "autosave": 5}
 
 AP_NAME = "journal-ap"
 AP_GATEWAY = "10.42.0.1"
@@ -83,7 +85,7 @@ AP_GATEWAY = "10.42.0.1"
 # older version can name a mode that no longer exists, and the settings screen
 # looks the value up by index, so an unknown one would raise there rather than
 # here.
-ENUMS = {"theme": THEMES, "font": FONTS, "paper": PAPERS, "led": LEDS}
+ENUMS = {"theme": THEMES, "font": FONTS, "paper": PAPERS}
 
 
 def load_config():
@@ -177,11 +179,14 @@ def compass(cfg, where):
     """Answer "where am I", on demand, when there is no display: one flash for
     writing, two for the menu, and so on.
 
+    Always available -- there is no setting to turn this off, because it is the
+    only way to tell where you are with nothing attached.
+
     The only thing that touches the LED. Nothing signals on its own -- no
     rhythm while you write, no flash on save -- so the device stays silent
     unless asked. The helper backgrounds the blinking, so this never delays a
     keystroke."""
-    if DEV or cfg.get("led", "off") == "off":
+    if DEV:
         return
     run_helper(LED_HELPER, ["compass", where])
 
@@ -509,7 +514,7 @@ def browse(stdscr, cfg):
             read_entry(stdscr, cfg, os.path.join(JOURNAL_DIR, files[sel]))
 
 def settings(stdscr, cfg):
-    fields = ["theme", "font", "paper", "led", "width", "anchor", "autosave"]
+    fields = ["theme", "font", "paper", "width", "anchor", "autosave"]
     sel = 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -539,11 +544,6 @@ def settings(stdscr, cfg):
                 apply_font(cfg)
             elif f == "paper":
                 cfg[f] = PAPERS[(PAPERS.index(cfg[f]) + d) % len(PAPERS)]
-            elif f == "led":
-                cfg[f] = LEDS[(LEDS.index(cfg[f]) + d) % len(LEDS)]
-                # Demonstrate it immediately, so the choice is legible with no
-                # screen: four flashes, which is where you are.
-                compass(cfg, "settings")
             elif f == "width":
                 cfg[f] = max(30, min(100, cfg[f] + d * 2))
             elif f == "anchor":

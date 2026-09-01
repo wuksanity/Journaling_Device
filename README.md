@@ -86,7 +86,6 @@ Adjustable in-app and persisted to JSON.
 | `theme`    | 5 presets | night, paper, amber, green, ocean     |
 | `font`     | 9 sizes   | console font size, `12x6` to `32x16`  |
 | `paper`    | 3 modes   | `off`, `ruled`, `margin`              |
-| `led`      | `off`, `on` | ^L counts out which screen you are on |
 | `width`    | 30-100    | text column width in characters       |
 | `anchor`   | 20-95     | cursor position down the screen, as % |
 | `autosave` | 1-60      | seconds between fsyncs                |
@@ -138,16 +137,21 @@ power cost.
 Requires the sudoers entry in [device/011_journal-console](device/011_journal-console),
 because `setfont` writes to root-owned `/dev/tty0`.
 
-### `led` — knowing where you are with no screen
+## `^L` — knowing where you are with no screen
 
 The point of writing on this thing screenless is that there is nothing to look
 at. But then nothing tells you which screen the app is on, and typing into a
 menu does nothing.
 
-Set `led` to `on` and **`^L` counts it out** on the keyboard's **Scroll Lock
+Press **`^L`** and it counts out where you are on the keyboard's **Scroll Lock
 LED** — chosen over the Pi's board light because it is under your fingers rather
 than in your bag, and over Caps and Num Lock because nothing else in the system
 uses Scroll Lock.
+
+**This is not a setting.** It is always available and there is nothing to switch
+on. An indicator you can accidentally leave off is worse than no indicator, and
+it having been a setting that defaulted to `off` silently broke a real
+away-from-home test.
 
 | Flashes | Where you are |
 |---------|---------------|
@@ -166,7 +170,8 @@ two seconds after you ask — counting is unambiguous where judging a tempo is
 not, and an indicator that blinks at you unprompted is the opposite of what this
 device is for. `LedSignalling` in the test suite asserts that a whole session of
 writing, autosaving, browsing and reading produces no LED activity at all
-without a keypress.
+without a keypress — and that a config written by an earlier version, carrying a
+stale `led` key, cannot silence it.
 
 One implementation note, since it cost a debugging round: brightness must be
 written *before* restoring the trigger. Writing brightness while a trigger owns
