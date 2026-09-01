@@ -70,7 +70,7 @@ Arrow keys navigate menus and scroll entries. In the entry list and the reader,
 
 ## Menu
 
-`Write`, `Browse entries`, `Settings`, `Hotspot`, `Shut down`.
+`Write`, `Browse entries`, `Settings`, `Hotspot` / `Stop hotspot`, `Shut down`.
 
 `Hotspot` raises the `journal-ap` access point from the keyboard. It exists for
 the failure this device keeps hitting: joining a network that gives it no usable
@@ -82,9 +82,20 @@ device — which the first version could, because it ran `nmcli connection up`
 directly with no path back, and with a subprocess timeout shorter than nmcli's
 own, so it killed the activation halfway and left neither network up.
 
+The entry is **state-aware**: it reads `Hotspot` when the AP is down and
+`Stop hotspot` when it is up, so it names the action rather than the feature.
+There is no screen to check state on, so the label has to carry it — and without
+it the only ways to end the hold early were to wait out the window or to reach
+the device over the network, which is no use when the reason you raised it was
+having no network.
+
 You press this blind: raising the AP drops the connection you would have read the
 screen over. So the LED confirms it — **six flashes** means the hotspot is up,
 **one long flash** means it failed. `^L` repeats the answer.
+
+Both directions verified on hardware with `tools/check_hotspot_state.sh`, which
+runs detached and logs the helper's state, the app's view of it, and the actual
+`wlan0` address through a raise and an early stop.
 
 Needs [device/journal-hotspot](device/journal-hotspot), which runs
 [device/ap-test.sh](device/ap-test.sh) detached via `systemd-run`, and the
