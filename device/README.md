@@ -244,6 +244,28 @@ Test it over SSH before rebooting:
 tmux kill-session -t journal
 ```
 
+## Boot does not wait for the network
+
+`NetworkManager-wait-online.service` is disabled:
+
+```bash
+sudo systemctl disable NetworkManager-wait-online.service
+```
+
+Its `ExecStart` is `nm-online -s -q` with no `--timeout`, which defaults to 30
+seconds. On the home network that cost about 1.5s, but away from any known
+network it would wait out the full 30 before `multi-user.target` — delaying the
+app by half a minute every time the device is used somewhere new, which is the
+main thing it is for.
+
+Nothing here needs a network at boot. `journal.py` contains no socket, HTTP or
+URL code at all; the network exists only so a phone can attach over SSH as a
+display. Boot is about 34 seconds with this disabled.
+
+`cloud-init-network.service` is still enabled and may add some delay off-network.
+It has not been measured away from wifi; if a café boot feels slow, that is the
+next thing to look at, and cloud-init has already done its job on this install.
+
 ## Still outstanding
 
 - Reflash with Raspberry Pi OS Lite. The Desktop image's packages are still
