@@ -64,20 +64,15 @@ PAPERS = ["off", "ruled", "margin"]
 RULE_CHAR = "\u2500"           # box drawings light horizontal
 MARGIN_CHAR = "\u2502"         # box drawings light vertical
 
-# How the app tells you which screen it is on with no display attached.
+# How the app tells you which screen it is on with no display attached: the
+# keyboard's Scroll Lock LED, an ambient rhythm per screen plus a countable
+# compass on demand. Under your fingers rather than in your bag, and nothing
+# else in the system uses Scroll Lock.
 #
-#   blink  the keyboard's Scroll Lock LED: an ambient rhythm per screen, a
-#          flash on each autosave, and a countable compass on demand. Costs
-#          nothing but two sysfs writes on screen changes.
-#   color  the keyboard's RGB backlight, set ONLY when you ask for it with ^L.
-#          Every EVision lighting mode carries AUTOMATIC_SAVE, meaning the
-#          keyboard persists it to its own flash on every write -- so writing a
-#          colour on every screen change would wear that memory out. On demand
-#          means one write per press, and the colour then stands as the answer
-#          to the last question you asked, not a live readout.
-LEDS = ["off", "blink", "color"]
+# Driving the keyboard's RGB backlight instead was tried and abandoned; see
+# device/journal-rgb for the protocol and what was ruled out.
+LEDS = ["off", "blink"]
 LED_HELPER = "/usr/local/bin/journal-led"
-RGB_HELPER = "/usr/local/bin/journal-rgb"
 
 DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
             "led": "off", "width": 58, "anchor": 62, "autosave": 5}
@@ -195,21 +190,13 @@ def led(cfg, *args):
 
 
 def compass(cfg, where):
-    """Answer "where am I", on demand, when there is no display.
-
-    In blink mode: a countable number of flashes, unambiguous in a way that
-    judging a rhythm's tempo is not. In color mode: the backlight turns the
-    colour of the current screen -- read at a glance, no counting.
-
-    This is the only thing that writes to the RGB backlight, and it writes once
-    per press."""
-    mode = cfg.get("led", "off")
-    if DEV or mode == "off":
+    """Answer "where am I", on demand, when there is no display: a countable
+    number of flashes naming the screen. Counting is unambiguous in a way that
+    judging a rhythm's tempo is not, so this is the one to reach for when you
+    have lost your place."""
+    if DEV or cfg.get("led", "off") == "off":
         return
-    if mode == "color":
-        run_helper(RGB_HELPER, [where])
-    else:
-        run_helper(LED_HELPER, ["compass", where])
+    run_helper(LED_HELPER, ["compass", where])
 
 
 def apply_font(cfg):
@@ -574,12 +561,11 @@ def settings(stdscr, cfg):
             elif f == "led":
                 cfg[f] = LEDS[(LEDS.index(cfg[f]) + d) % len(LEDS)]
                 # Demonstrate the choice immediately, so it is legible with no
-                # screen. Uses the on-demand path, so picking "color" costs the
-                # same single write as pressing ^L would.
+                # screen.
                 if cfg[f] == "off":
                     led(dict(cfg, led="blink"), "none")
                 else:
-                    compass(cfg, "settings")
+                    led(cfg, "settings")
             elif f == "width":
                 cfg[f] = max(30, min(100, cfg[f] + d * 2))
             elif f == "anchor":

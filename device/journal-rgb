@@ -1,12 +1,42 @@
 #!/usr/bin/env python3
-"""Set the keyboard's RGB backlight to a colour naming the app's current screen.
+"""DOES NOT WORK on this keyboard. Kept for the protocol notes and to save the
+next attempt from repeating the ruled-out parts. Not installed, not wired into
+the app -- journal.py uses the Scroll Lock LED instead.
 
     journal-rgb write|menu|browse|read|settings|save|off
     journal-rgb test              cycle every colour, 2s each
     journal-rgb probe             report what it found, write nothing
+    --signed                      signed-char checksum variant
 
-A colour is a better "where am I" signal than a blink rhythm: it is continuous
-and needs no counting.
+What happens: the keyboard accepts and acknowledges every packet, echoing the
+mode payload back, but stays in whatever lighting mode it was already in --
+observed as the wave effect the protocol calls "Go with the stream" (0x01).
+
+Ruled out
+---------
+* Wrong interface. The vendor page 0xFF1C is on interface 1, report id 4, and
+  the report descriptor confirms it as a 63-byte OUTPUT report there. That is
+  what this writes to, with write(), which is what hidapi's hid_write does.
+* Wrong framing. Wrapping the mode change in the begin (0x01) and end (0x02)
+  commands was wrong -- OpenRGB's DeviceUpdateMode sends the parameter packet
+  alone -- but sending it alone did not help either.
+* Checksum signedness. OpenRGB sums into `char usb_buf[64]`, signed on the x86
+  machines it was developed on and unsigned on ARM, which changes the sum
+  whenever a colour byte exceeds 0x7F. Both interpretations were tried.
+
+Not tried
+---------
+* hidraw0 exposes a 64-byte FEATURE report on the consumer page (0x0C) with no
+  report id. That is a second plausible command channel, and would need
+  HIDIOCSFEATURE rather than write(). Untried because at that point it is
+  guessing at an undocumented interface by firing bytes at keyboard firmware.
+* A USB capture of the vendor's Windows software, which is the only way to
+  learn what this unit actually expects. That is the real next step if anyone
+  wants this.
+
+Durability note, if this is ever revisited: every EVision lighting mode carries
+MODE_FLAG_AUTOMATIC_SAVE, so the keyboard writes each change to its own flash.
+Any integration must be on demand only, never per screen change.
 
 Protocol
 --------
@@ -131,13 +161,20 @@ def send(fd, data):
 
 
 def apply_mode(node, mode, brightness, rgb, signed=False):
+    """One packet, no framing.
+
+    The begin (0x01) and end (0x02) commands belong to the per-key colour path
+    only -- OpenRGB's DeviceUpdateMode calls SendKeyboardModeEx on its own.
+    Wrapping a mode change in them made the keyboard take the begin command as
+    an instruction of its own and settle into wave mode ("Go with the stream",
+    which is mode 0x01) whatever colour was asked for.
+
+    One packet per call is also exactly what the durability constraint wants."""
     fd = os.open(node, os.O_RDWR | os.O_NONBLOCK)
     try:
-        send(fd, packet(CMD_BEGIN, signed=signed))
         payload = bytes([mode, brightness, SPEED_NORMAL, 0x00, 0x00,
                          rgb[0], rgb[1], rgb[2]])
         send(fd, packet(CMD_SET_PARAMETER, PARAM_MODE, payload, signed=signed))
-        send(fd, packet(CMD_END, signed=signed))
     finally:
         os.close(fd)
 

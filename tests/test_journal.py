@@ -565,7 +565,7 @@ class LedSignalling(unittest.TestCase):
         self.assertIn(journal.LED_HELPER, calls[0])
         self.assertEqual(calls[0][:2], ["sudo", "-n"])
 
-    def test_compass_passes_two_arguments_in_blink_mode(self):
+    def test_compass_passes_two_arguments(self):
         calls = self.capture(lambda: journal.compass(self.on("blink"), "browse"))
         self.assertEqual(calls[0][-2:], ["compass", "browse"])
 
@@ -573,62 +573,6 @@ class LedSignalling(unittest.TestCase):
         for where in ("write", "menu", "browse", "read", "settings"):
             calls = self.capture(lambda w=where: journal.compass(self.on(), w))
             self.assertEqual(calls[0][-1], where)
-
-
-class ColorModeWearsNothing(unittest.TestCase):
-    """The keyboard persists every lighting change to its own flash, so colour
-    mode must touch the backlight only when asked. These tests are the guarantee
-    that ambient signalling never reaches it."""
-
-    def capture(self, fn):
-        calls = []
-        real_run, real_dev = journal.subprocess.run, journal.DEV
-        journal.subprocess.run = lambda *a, **k: calls.append(a[0])
-        journal.DEV = False
-        try:
-            fn()
-        finally:
-            journal.subprocess.run = real_run
-            journal.DEV = real_dev
-        return calls
-
-    def color(self):
-        return dict(journal.DEFAULTS, led="color")
-
-    def test_ambient_signalling_is_silent_in_color_mode(self):
-        for state in ("write", "menu", "browse", "read", "settings", "save",
-                      "none"):
-            calls = self.capture(lambda s=state: journal.led(self.color(), s))
-            self.assertEqual(calls, [], "led(%r) must not write in color mode" % state)
-
-    def test_compass_is_the_only_thing_that_writes(self):
-        calls = self.capture(lambda: journal.compass(self.color(), "write"))
-        self.assertEqual(len(calls), 1, "exactly one write per press")
-        self.assertIn(journal.RGB_HELPER, calls[0])
-        self.assertEqual(calls[0][-1], "write")
-
-    def test_blink_mode_never_touches_the_rgb_helper(self):
-        for fn in (lambda: journal.led(dict(self.color(), led="blink"), "write"),
-                   lambda: journal.compass(dict(journal.DEFAULTS, led="blink"),
-                                           "write")):
-            calls = self.capture(fn)
-            for call in calls:
-                self.assertNotIn(journal.RGB_HELPER, call)
-
-    def test_a_whole_writing_session_makes_no_rgb_writes(self):
-        # Screen changes, autosaves and shutdown must all stay silent; only an
-        # explicit ^L may write.
-        cfg = self.color()
-        calls = self.capture(lambda: [journal.led(cfg, s) for s in
-                                      ("menu", "write", "save", "save",
-                                       "browse", "read", "none")])
-        self.assertEqual(calls, [])
-
-    def test_off_writes_nothing_at_all(self):
-        cfg = dict(journal.DEFAULTS, led="off")
-        calls = self.capture(lambda: (journal.led(cfg, "write"),
-                                      journal.compass(cfg, "write")))
-        self.assertEqual(calls, [])
 
 
 class CompassKey(unittest.TestCase):
