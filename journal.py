@@ -51,10 +51,7 @@ FONTS = ["default", "12x6", "14", "16", "18x10", "20x10",
          "22x11", "24x12", "28x14", "32x16"]
 FONT_FAMILY = "Uni2-Terminus%s"     # Uni2 covers the widest charset of the set
 
-# Ruled-paper backgrounds. "lined" underlines the full text column on every row,
-# including the empty ones below the cursor, which is what makes the page read
-# as ruled rather than just underlined text. "margin" adds a notebook rule down
-# the left edge.
+# Ruled-paper backgrounds.
 # "ruled" draws real lines: text on every other row with a ruled line beneath
 # it, so the page has the spacing of a notebook rather than an underline under
 # every row. It halves how many lines fit on screen, which is the honest cost of
@@ -293,8 +290,11 @@ def centered(stdscr, y, s, attr=0):
     except curses.error:
         pass
 
-def menu(stdscr, cfg):
-    items = ["Write", "Browse entries", "Settings", "Hotspot", "Shut down"]
+def menu(stdscr, cfg, hotspot_up=False):
+    # The hotspot entry names the action rather than the feature, so it is
+    # obvious which way it will go -- there is no screen to check state on.
+    items = ["Write", "Browse entries", "Settings",
+             "Stop hotspot" if hotspot_up else "Hotspot", "Shut down"]
     sel = 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -326,7 +326,15 @@ def write_mode(stdscr, cfg):
     paras = text.split("\n")
     cache = {}
     stdscr.timeout(250)
-    curses.curs_set(1)
+    # 2 is the "very visible" cursor, usually a block; fall back to the normal
+    # one where the terminal has no cvvis capability.
+    try:
+        curses.curs_set(2)
+    except Exception:
+        try:
+            curses.curs_set(1)
+        except Exception:
+            pass
     last_save, dirty, need_draw = time.time(), False, True
 
     while True:
@@ -370,8 +378,21 @@ def write_mode(stdscr, cfg):
                     stdscr.addstr(h - 1, left + col - len(keys), keys, curses.A_DIM)
             except curses.error:
                 pass
-            cy = max(1, min(h - 2, len(lines) - start))
+            # Where the next character will land. In ruled mode the text
+            # occupies every other row, so the last visible line is not at row
+            # len(view) -- placing the cursor there put it on a ruled line
+            # instead of on the text.
+            stride = 2 if is_ruled(cfg) else 1
+            cy = max(1, min(h - 2, 1 + (len(view) - 1) * stride))
             cx = min(left + min(len(lines[-1]), col), w - 1)
+
+            # A block at the insertion point. The terminal's own cursor is
+            # placed there too, but it is often invisible over SSH on a phone --
+            # which is the only display this device has.
+            try:
+                stdscr.addstr(cy, cx, " ", curses.A_REVERSE)
+            except curses.error:
+                pass
             try:
                 stdscr.move(cy, cx)
             except curses.error:
@@ -560,6 +581,40 @@ HOTSPOT_HELPER = "/usr/local/bin/journal-hotspot"
 HOTSPOT_WINDOW = 900            # seconds the AP is held before it restores itself
 
 
+def hotspot_active():
+    """Whether the access point is currently being held. Asked once each time
+    the menu is drawn, so the entry can say what it will actually do."""
+    if DEV:
+        return False
+    try:
+        r = subprocess.run(["sudo", "-n", HOTSPOT_HELPER, "status"],
+                           stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                           timeout=10)
+        return r.stdout.decode("utf-8", "replace").strip() == "up"
+    except Exception:
+        return False
+
+
+def hotspot_down():
+    """End the hold early. Without this the only ways back were to wait out the
+    window or to reach the device over the network -- and needing the network to
+    turn off the thing you turned on because you had no network is no use."""
+    if DEV:
+        return "dev mode: leaving the network alone"
+    try:
+        r = subprocess.run(["sudo", "-n", HOTSPOT_HELPER, "down"],
+                           stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                           timeout=45)
+        if r.returncode == 0:
+            return "hotspot stopped"
+        out = r.stdout.decode("utf-8", "replace").strip().splitlines()
+        return (out[-1] if out else "failed to stop")[:70]
+    except subprocess.TimeoutExpired:
+        return "stop did not finish in 45s"
+    except Exception as exc:
+        return str(exc)[:70]
+
+
 def hotspot():
     """Recovery path for the failure that keeps biting: the device joins a
     network that gives it no usable route, so there is no way in over SSH and no
@@ -599,38 +654,45 @@ def hotspot():
         return str(exc)[:70]
 
 
-def hotspot_screen(stdscr, cfg):
+def hotspot_screen(stdscr, cfg, stop=False):
     stdscr.timeout(-1)
     curses.curs_set(0)
     h, w = stdscr.getmaxyx()
-    mid = max(3, h // 2)
+    mid = max(4, h // 2)
     stdscr.erase()
-    centered(stdscr, mid, "starting hotspot...", curses.A_BOLD)
+    centered(stdscr, mid, "stopping hotspot..." if stop
+             else "starting hotspot...", curses.A_BOLD)
     stdscr.refresh()
 
-    result = hotspot()
+    result = hotspot_down() if stop else hotspot()
+    up = result.startswith("hotspot up")
 
     stdscr.erase()
     centered(stdscr, mid - 4, "hotspot", curses.A_BOLD)
     centered(stdscr, mid - 2, result)
-    centered(stdscr, mid, "network   %s" % AP_NAME, curses.A_DIM)
-    centered(stdscr, mid + 1, "ssh       walker@%s" % AP_GATEWAY, curses.A_DIM)
-    centered(stdscr, mid + 3, "the house network comes back by itself",
-             curses.A_DIM)
+    if up:
+        centered(stdscr, mid, "network   %s" % AP_NAME, curses.A_DIM)
+        centered(stdscr, mid + 1, "ssh       walker@%s" % AP_GATEWAY,
+                 curses.A_DIM)
+        centered(stdscr, mid + 3,
+                 "the house network comes back by itself", curses.A_DIM)
+    elif stop:
+        centered(stdscr, mid, "back on the usual network", curses.A_DIM)
     centered(stdscr, h - 2, "any key to go back    ^L to confirm",
              curses.A_DIM)
     stdscr.refresh()
 
-    # Six flashes says the hotspot is up. This screen is reached blind -- the
-    # act of raising the AP drops the connection you would have read it over --
-    # so the LED is the only confirmation available.
-    compass(cfg, "hotspot" if result.startswith("hotspot up") else "failed")
+    # This screen is reached blind when raising the AP -- the act of doing it
+    # drops the connection you would have read it over -- so the LED is the only
+    # confirmation available. Six flashes for up, one long flash for a failure.
+    signal = "hotspot" if up else ("menu" if stop and "stopped" in result
+                                   else "failed")
+    compass(cfg, signal)
 
     while True:
         ch = read_key(stdscr, -1)
         if ch in ("l", "\x0c"):
-            compass(cfg, "hotspot" if result.startswith("hotspot up")
-                    else "failed")
+            compass(cfg, signal)
             continue
         return
 
@@ -649,7 +711,7 @@ def main(stdscr):
     apply_font(cfg)
     stdscr.keypad(True)
     while True:
-        choice = menu(stdscr, cfg)
+        choice = menu(stdscr, cfg, hotspot_active())
         if choice == "Write":
             if write_mode(stdscr, cfg) == "off":
                 power_off()
@@ -659,8 +721,8 @@ def main(stdscr):
         elif choice == "Settings":
             settings(stdscr, cfg)
             apply_font(cfg)
-        elif choice == "Hotspot":
-            hotspot_screen(stdscr, cfg)
+        elif choice in ("Hotspot", "Stop hotspot"):
+            hotspot_screen(stdscr, cfg, stop=(choice == "Stop hotspot"))
         elif choice == "Shut down":
             power_off()
             return

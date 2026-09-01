@@ -36,6 +36,7 @@ class FakeScr:
         self.h, self.w = h, w
         self.keys = list(keys)
         self.drawn = []
+        self.moved = []
 
     def getmaxyx(self):
         return (self.h, self.w)
@@ -61,7 +62,7 @@ class FakeScr:
         pass
 
     def move(self, y, x):
-        pass
+        self.moved.append((y, x))
 
     def bkgd(self, *a):
         pass
@@ -664,6 +665,87 @@ class CompassKey(unittest.TestCase):
         self.assertIn("^L", text)
 
 
+class Cursor(unittest.TestCase):
+    """Where the next character will land has to be visible, and has to be in
+    the right place. Ruled mode puts text on every other row, so a row number
+    derived from the count of visible lines lands on a ruled line instead."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._real = journal.JOURNAL_DIR
+        journal.JOURNAL_DIR = self.dir
+
+    def tearDown(self):
+        journal.JOURNAL_DIR = self._real
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def run_write(self, text, paper="off", h=24, w=80):
+        # write_mode opens today's entry and appends, so each run has to start
+        # from an empty file or the line count carries over from the last one.
+        path = journal.today_path()
+        if os.path.exists(path):
+            os.remove(path)
+        cfg = dict(journal.DEFAULTS, paper=paper, width=40)
+        scr = FakeScr(h=h, w=w, keys=list(text) + ["\x18"])
+        journal.write_mode(scr, cfg)
+        return scr, cfg
+
+    def caret(self, scr):
+        blocks = [(y, x) for y, x, s, a in scr.drawn
+                  if a & curses.A_REVERSE and s == " "]
+        return blocks[-1] if blocks else None
+
+    def test_a_caret_block_is_drawn(self):
+        scr, _ = self.run_write("hello")
+        self.assertIsNotNone(self.caret(scr),
+                             "nothing marks the insertion point")
+
+    def test_caret_sits_where_the_terminal_cursor_was_put(self):
+        scr, _ = self.run_write("hello")
+        self.assertEqual(self.caret(scr), scr.moved[-1])
+
+    def test_caret_follows_the_text_across_a_line(self):
+        short, _ = self.run_write("hi")
+        longer, _ = self.run_write("hello there")
+        self.assertGreater(self.caret(longer)[1], self.caret(short)[1])
+
+    def test_unruled_single_line_sits_on_the_first_row(self):
+        scr, _ = self.run_write("one line")
+        self.assertEqual(self.caret(scr)[0], 1)
+
+    def test_ruled_single_line_also_sits_on_the_first_row(self):
+        scr, _ = self.run_write("one line", paper="ruled")
+        self.assertEqual(self.caret(scr)[0], 1)
+
+    def test_ruled_second_line_skips_the_rule_row(self):
+        # Two paragraphs: unruled the cursor belongs on row 2, ruled on row 3,
+        # because row 2 holds the ruled line under the first one.
+        plain, _ = self.run_write("a\nb", paper="off")
+        ruled, _ = self.run_write("a\nb", paper="ruled")
+        self.assertEqual(self.caret(plain)[0], 2)
+        self.assertEqual(self.caret(ruled)[0], 3)
+
+    def test_ruled_cursor_never_lands_on_a_rule_row(self):
+        # Rules are drawn on even rows starting at 2; text on odd rows from 1.
+        for n in range(1, 7):
+            scr, _ = self.run_write("\n".join("line %d" % i for i in range(n)),
+                                    paper="ruled")
+            row = self.caret(scr)[0]
+            self.assertEqual(row % 2, 1,
+                             "%d lines put the cursor on rule row %d" % (n, row))
+
+    def test_caret_stays_inside_the_screen(self):
+        scr, _ = self.run_write("x" * 200, paper="ruled", h=10, w=30)
+        y, x = self.caret(scr)
+        self.assertTrue(1 <= y <= 8, y)
+        self.assertLess(x, 30)
+
+    def test_margin_mode_places_the_cursor_like_ruled(self):
+        ruled, _ = self.run_write("a\nb", paper="ruled")
+        margin, _ = self.run_write("a\nb", paper="margin")
+        self.assertEqual(self.caret(ruled)[0], self.caret(margin)[0])
+
+
 class Menu(unittest.TestCase):
     def _choose(self, index):
         scr = FakeScr(keys=[curses.KEY_DOWN] * index + ["\n"])
@@ -681,16 +763,63 @@ class Menu(unittest.TestCase):
 
 
 class Hotspot(unittest.TestCase):
-    def test_does_nothing_under_dev(self):
-        # Must not shell out to nmcli during local development.
-        self.assertIn("dev mode", journal.hotspot())
+    """Raising the AP drops the connection the screen would be read over, so
+    this is operated blind. Both directions have to be reachable from the
+    keyboard, and neither may be able to strand the device."""
 
-    def test_screen_shows_how_to_connect(self):
-        scr = FakeScr(keys=["x"])
-        journal.hotspot_screen(scr, dict(journal.DEFAULTS))
-        text = " ".join(s for y, x, s, attr in scr.drawn)
+    def screen(self, result, stop=False, h=24):
+        """Drive the screen with a fixed helper result."""
+        real_up, real_down = journal.hotspot, journal.hotspot_down
+        journal.hotspot = lambda: result
+        journal.hotspot_down = lambda: result
+        try:
+            scr = FakeScr(h=h, keys=["x"])
+            journal.hotspot_screen(scr, dict(journal.DEFAULTS), stop=stop)
+        finally:
+            journal.hotspot = real_up
+            journal.hotspot_down = real_down
+        return " ".join(s for y, x, s, attr in scr.drawn)
+
+    def test_neither_direction_touches_the_network_under_dev(self):
+        self.assertIn("dev mode", journal.hotspot())
+        self.assertIn("dev mode", journal.hotspot_down())
+
+    def test_status_is_false_under_dev(self):
+        self.assertFalse(journal.hotspot_active())
+
+    def test_when_up_it_shows_how_to_connect(self):
+        text = self.screen("hotspot up for 15 min")
         self.assertIn(journal.AP_NAME, text)
         self.assertIn(journal.AP_GATEWAY, text)
+        self.assertIn("comes back by itself", text)
+
+    def test_when_stopped_it_does_not_offer_a_dead_address(self):
+        text = self.screen("hotspot stopped", stop=True)
+        self.assertIn("stopped", text)
+        self.assertNotIn(journal.AP_GATEWAY, text)
+
+    def test_a_failure_is_shown_rather_than_swallowed(self):
+        text = self.screen("failed to start", stop=False)
+        self.assertIn("failed", text)
+        self.assertNotIn(journal.AP_GATEWAY, text)
+
+    def test_the_menu_names_the_action_not_the_feature(self):
+        down = FakeScr(keys=["\n"])
+        self.assertEqual(journal.menu(down, dict(journal.DEFAULTS),
+                                      hotspot_up=False), "Write")
+        # The fourth item is the one that changes.
+        for up, expected in ((False, "Hotspot"), (True, "Stop hotspot")):
+            scr = FakeScr(keys=[curses.KEY_DOWN] * 3 + ["\n"])
+            self.assertEqual(
+                journal.menu(scr, dict(journal.DEFAULTS), hotspot_up=up),
+                expected)
+
+    def test_shut_down_stays_the_last_item_either_way(self):
+        for up in (False, True):
+            scr = FakeScr(keys=[curses.KEY_UP, "\n"])
+            self.assertEqual(
+                journal.menu(scr, dict(journal.DEFAULTS), hotspot_up=up),
+                "Shut down")
 
 
 class ReadKey(unittest.TestCase):
