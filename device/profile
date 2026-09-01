@@ -23,5 +23,13 @@ if [ "$(tty)" = "/dev/tty1" ] && [ -z "${JOURNAL_SHELL:-}" ]; then
 fi
 
 if [ -n "$SSH_CONNECTION" ] && [ -z "$TMUX" ]; then
-    tmux attach -t journal 2>/dev/null
+    # -A: attach if the session exists, otherwise create it and start the app.
+    # Plain `tmux attach` failed silently when the session was gone, dropping
+    # you at a shell prompt -- and with no screen on the device there is no way
+    # to tell that apart from being in the app.
+    #
+    # No `exec` here, deliberately: detaching or quitting falls through to a
+    # shell, which is the only interactive way in for admin work. (Commands run
+    # as `ssh host "..."` skip this file entirely, so those are unaffected.)
+    tmux new-session -A -s journal "python3 $HOME/journal.py"
 fi

@@ -1,0 +1,135 @@
+#!/bin/bash
+# Tell the writer which screen the app is on, via an LED, so the device is
+# navigable with no display attached.
+#
+#     journal-led state    write|menu|browse|read|settings
+#     journal-led compass  <state>     n distinct blinks, then back to the rhythm
+#     journal-led save                 one flash, then back to the rhythm
+#     journal-led none                 hand the LED back
+#     journal-led which                print the LED being driven
+#
+# Two channels, deliberately:
+#
+#   - An ambient rhythm, set by the kernel's `timer` trigger. Costs nothing to
+#     maintain and tells you at a glance whether you are writing or in a menu.
+#   - An on-demand compass: a countable number of blinks naming the exact
+#     screen. Counting flashes is unambiguous in a way that judging tempo is
+#     not, so this is the one to trust when you are unsure.
+#
+# Prefers a keyboard lock LED over the Pi's board LED: it is under your fingers
+# rather than in your bag. Scroll Lock is the natural pick, since nothing else
+# in the system uses it.
+
+set -u
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+
+pick_led() {
+    for p in /sys/class/leds/*::scrolllock /sys/class/leds/*::numlock \
+             /sys/class/leds/*::capslock; do
+        [ -d "$p" ] && { printf '%s\n' "$p"; return 0; }
+    done
+    for p in /sys/class/leds/ACT /sys/class/leds/led0; do
+        [ -d "$p" ] && { printf '%s\n' "$p"; return 0; }
+    done
+    return 1
+}
+
+LED=$(pick_led) || exit 0        # no LED is not an error; just do nothing
+
+# What this LED does when the app is not driving it.
+default_trigger() {
+    case "$LED" in
+        *scrolllock) echo "kbd-scrolllock" ;;
+        *numlock)    echo "kbd-numlock" ;;
+        *capslock)   echo "kbd-capslock" ;;
+        *ACT|*led0)  echo "mmc0" ;;
+        *)           echo "none" ;;
+    esac
+}
+
+set_rhythm() {
+    # delay_on and delay_off only exist once the timer trigger is selected.
+    echo timer > "$LED/trigger" 2>/dev/null || return 1
+    echo "$1" > "$LED/delay_on" 2>/dev/null
+    echo "$2" > "$LED/delay_off" 2>/dev/null
+}
+
+# Ambient rhythm per screen. Writing is a long slow pulse; the menu is a fast
+# flutter, because that is the state where typing does nothing and you want to
+# notice.
+apply_state() {
+    case "$1" in
+        write)    set_rhythm 1400 1400 ;;
+        menu)     set_rhythm 100 100 ;;
+        browse)   set_rhythm 400 400 ;;
+        read)     set_rhythm 250 1250 ;;
+        settings) set_rhythm 100 500 ;;
+        *)        return 1 ;;
+    esac
+}
+
+# Blink count per screen, for the compass. Ordered so the two you are in most
+# often are the fewest blinks to count.
+compass_count() {
+    case "$1" in
+        write)    echo 1 ;;
+        menu)     echo 2 ;;
+        browse)   echo 3 ;;
+        settings) echo 4 ;;
+        read)     echo 5 ;;
+        *)        echo 0 ;;
+    esac
+}
+
+STATE="${1:-none}"
+
+case "$STATE" in
+    compass)
+        want="${2:-menu}"
+        count=$(compass_count "$want")
+        # Backgrounded: this sleeps, and it is triggered by a keypress. Blocking
+        # here would stall the keystroke loop the way syncing on every newline
+        # used to.
+        (
+            echo none > "$LED/trigger" 2>/dev/null
+            echo 0 > "$LED/brightness" 2>/dev/null
+            sleep 0.45                       # a clear gap before counting starts
+            i=0
+            while [ "$i" -lt "$count" ]; do
+                echo 1 > "$LED/brightness" 2>/dev/null
+                sleep 0.16
+                echo 0 > "$LED/brightness" 2>/dev/null
+                sleep 0.24
+                i=$((i + 1))
+            done
+            sleep 0.45
+            apply_state "$want" || echo "$(default_trigger)" > "$LED/trigger" 2>/dev/null
+        ) >/dev/null 2>&1 &
+        ;;
+
+    save)
+        # One deliberate flash. Answers the question screenless writing actually
+        # raises: did it save? Backgrounded for the same reason as above.
+        (
+            echo none > "$LED/trigger" 2>/dev/null
+            echo 1 > "$LED/brightness" 2>/dev/null
+            sleep 0.35
+            echo 0 > "$LED/brightness" 2>/dev/null
+            apply_state write
+        ) >/dev/null 2>&1 &
+        ;;
+
+    none|off)
+        echo "$(default_trigger)" > "$LED/trigger" 2>/dev/null \
+            || echo none > "$LED/trigger" 2>/dev/null
+        echo 0 > "$LED/brightness" 2>/dev/null
+        ;;
+
+    which)
+        printf '%s\n' "$LED"
+        ;;
+
+    *)
+        apply_state "$STATE" || { echo "unknown state: $STATE" >&2; exit 2; }
+        ;;
+esac

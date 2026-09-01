@@ -31,8 +31,14 @@ FONT_FAMILY = "Uni2-Terminus%s"     # Uni2 covers the widest charset of the set
 # the left edge.
 PAPERS = ["off", "lined", "margin"]
 
+# Blink rhythms telling you which screen you are on, so the device is navigable
+# with no display attached. "saves" additionally flashes on each autosave, at
+# the cost of a small subprocess every few seconds while writing.
+LEDS = ["off", "state", "saves"]
+LED_HELPER = "/usr/local/bin/journal-led"
+
 DEFAULTS = {"theme": "night", "font": "default", "paper": "off",
-            "width": 58, "anchor": 62, "autosave": 5}
+            "led": "off", "width": 58, "anchor": 62, "autosave": 5}
 
 AP_NAME = "journal-ap"
 AP_GATEWAY = "10.42.0.1"
@@ -109,6 +115,34 @@ def read_key(stdscr, timeout=250):
         return None
     return ch
 
+def led(cfg, *args):
+    """Drive the LED, so the app is navigable with no display attached.
+
+        led(cfg, "write")               ambient rhythm for a screen
+        led(cfg, "compass", "write")    countable blinks naming the screen
+        led(cfg, "save")                one flash confirming an fsync
+        led(cfg, "none")                hand the LED back
+
+    The kernel's timer trigger maintains the ambient rhythm, so this only runs
+    on screen changes, never on the keystroke path. The compass and save
+    flashes do sleep, so the helper backgrounds those."""
+    if DEV or cfg.get("led", "off") == "off":
+        return
+    try:
+        subprocess.run(["sudo", "-n", LED_HELPER] + list(args),
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                       timeout=5)
+    except Exception:
+        pass
+
+
+def compass(cfg, where):
+    """Blink out which screen you are on, on demand. Counting flashes is
+    unambiguous in a way that judging a rhythm's tempo is not, so this is the
+    one to reach for when you have lost your place."""
+    led(cfg, "compass", where)
+
+
 def apply_font(cfg):
     """Set the console font. setfont acts on the current virtual console via
     /dev/tty0, which is root-owned, so this needs the sudoers entry in
@@ -182,17 +216,21 @@ def menu(stdscr, cfg):
         for i, item in enumerate(items):
             centered(stdscr, top + 4 + i, "  %s  " % item,
                      curses.A_REVERSE if i == sel else 0)
-        centered(stdscr, h - 2, "arrows to move    enter to choose", curses.A_DIM)
+        centered(stdscr, h - 2,
+                 "arrows to move    enter to choose    l for where", curses.A_DIM)
         stdscr.refresh()
         ch = read_key(stdscr, -1)
         if ch in (curses.KEY_UP, "k"):
             sel = (sel - 1) % len(items)
         elif ch in (curses.KEY_DOWN, "j"):
             sel = (sel + 1) % len(items)
+        elif ch in ("l", "\x0c"):
+            compass(cfg, "menu")
         elif ch in ("\n", "\r", curses.KEY_ENTER):
             return items[sel]
 
 def write_mode(stdscr, cfg):
+    led(cfg, "write")
     path = today_path()
     text = read_file(path) if os.path.exists(path) else ""
     paras = text.split("\n")
@@ -234,7 +272,7 @@ def write_mode(stdscr, cfg):
             status = "%d words" % sum(len(p.split()) for p in paras)
             if not dirty:
                 status += "    saved"
-            keys = "^X menu   ^D off"
+            keys = "^X menu  ^L where  ^D off"
             try:
                 stdscr.addstr(h - 1, left, status[:col], curses.A_DIM)
                 if col - len(keys) > len(status) + 2:
@@ -256,6 +294,8 @@ def write_mode(stdscr, cfg):
             if dirty and time.time() - last_save > cfg["autosave"]:
                 save_text("\n".join(paras), path)
                 dirty, last_save, need_draw = False, time.time(), True
+                if cfg.get("led", "off") == "saves":
+                    led(cfg, "save")
             continue
 
         need_draw = True
@@ -285,11 +325,17 @@ def write_mode(stdscr, cfg):
         elif ch == "\x15":
             paras[-1] = ""
             dirty = True
+        elif ch == "\x0c":
+            # ^L, not "l": this is a writing surface, so a bare letter has to
+            # remain a letter. ^L conventionally means redraw, which need_draw
+            # above already does, so the compass comes free with it.
+            compass(cfg, "write")
         elif isinstance(ch, str) and (ch.isprintable() or ch == "\t"):
             paras[-1] += ch
             dirty = True
 
 def read_entry(stdscr, cfg, path):
+    led(cfg, "read")
     text = read_file(path)
     offset = 0
     stdscr.timeout(-1)
@@ -315,6 +361,8 @@ def read_entry(stdscr, cfg, path):
         ch = read_key(stdscr, -1)
         if ch == "q":
             return
+        elif ch in ("l", "\x0c"):
+            compass(cfg, "read")
         elif ch == curses.KEY_DOWN:
             offset = min(max_off, offset + 1)
         elif ch == curses.KEY_UP:
@@ -332,6 +380,7 @@ def browse(stdscr, cfg):
     files = entries()
     if not files:
         return
+    led(cfg, "browse")
     sel, top = 0, 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -369,13 +418,17 @@ def browse(stdscr, cfg):
             sel = 0
         elif ch == curses.KEY_END:
             sel = len(files) - 1
+        elif ch in ("l", "\x0c"):
+            compass(cfg, "browse")
         elif ch == "q":
             return
         elif ch in ("\n", "\r", curses.KEY_ENTER):
             read_entry(stdscr, cfg, os.path.join(JOURNAL_DIR, files[sel]))
+            led(cfg, "browse")      # read_entry changed it; put it back
 
 def settings(stdscr, cfg):
-    fields = ["theme", "font", "paper", "width", "anchor", "autosave"]
+    led(cfg, "settings")
+    fields = ["theme", "font", "paper", "led", "width", "anchor", "autosave"]
     sel = 0
     stdscr.timeout(-1)
     curses.curs_set(0)
@@ -405,12 +458,19 @@ def settings(stdscr, cfg):
                 apply_font(cfg)
             elif f == "paper":
                 cfg[f] = PAPERS[(PAPERS.index(cfg[f]) + d) % len(PAPERS)]
+            elif f == "led":
+                cfg[f] = LEDS[(LEDS.index(cfg[f]) + d) % len(LEDS)]
+                # Show the new setting immediately, so the choice is legible
+                # without a screen.
+                led(cfg, "settings" if cfg[f] != "off" else "none")
             elif f == "width":
                 cfg[f] = max(30, min(100, cfg[f] + d * 2))
             elif f == "anchor":
                 cfg[f] = max(20, min(95, cfg[f] + d * 5))
             elif f == "autosave":
                 cfg[f] = max(1, min(60, cfg[f] + d))
+        elif ch in ("l", "\x0c"):
+            compass(cfg, "settings")
         elif ch == "q":
             save_config(cfg)
             return
@@ -463,6 +523,13 @@ def power_off():
     if not DEV:
         subprocess.run(["sudo", "/sbin/poweroff"])
 
+
+def led_release(cfg):
+    """Hand the LED back to whatever normally owns it, so it does not keep
+    blinking a rhythm for an app that has exited."""
+    led(dict(cfg, led="state") if cfg.get("led", "off") != "off" else cfg,
+        "none")
+
 def main(stdscr):
     curses.use_default_colors()
     cfg = load_config()
@@ -470,18 +537,22 @@ def main(stdscr):
     apply_font(cfg)
     stdscr.keypad(True)
     while True:
+        led(cfg, "menu")
         choice = menu(stdscr, cfg)
         if choice == "Write":
             if write_mode(stdscr, cfg) == "off":
+                led_release(cfg)
                 power_off()
                 return
         elif choice == "Browse entries":
             browse(stdscr, cfg)
         elif choice == "Settings":
             settings(stdscr, cfg)
+            apply_font(cfg)
         elif choice == "Hotspot":
             hotspot_screen(stdscr, cfg)
         elif choice == "Shut down":
+            led_release(cfg)
             power_off()
             return
 

@@ -53,6 +53,22 @@ printf '%s ALL=(ALL) NOPASSWD: /sbin/poweroff\n' "$USER" | \
 sudo chmod 440 /etc/sudoers.d/010_poweroff
 sudo visudo -c >/dev/null && echo "sudoers OK"
 
+say "led signalling"
+# Lets the app blink which screen it is on, so the device is navigable with no
+# display attached.
+if [ -f /tmp/journal-led ]; then
+    sudo install -m 755 -o root -g root /tmp/journal-led /usr/local/bin/journal-led
+    if [ -f /tmp/012_journal-led ] && sudo visudo -cf /tmp/012_journal-led >/dev/null; then
+        sudo install -m 440 -o root -g root /tmp/012_journal-led \
+            /etc/sudoers.d/012_journal-led
+        echo "  installed, driving $(sudo -n /usr/local/bin/journal-led which || echo 'no LED found')"
+    else
+        echo "  sudoers file missing or failed visudo -c" >&2
+    fi
+else
+    echo "  /tmp/journal-led not staged, skipping"
+fi
+
 say "console font permission"
 # The font setting in journal.py calls setfont, which writes to root-owned
 # /dev/tty0. Validate before installing: a bad file here breaks sudo entirely.

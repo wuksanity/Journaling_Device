@@ -1,0 +1,10 @@
+# Lets the app drive an LED to signal which screen it is on, for writing with
+# no display attached. The LED sysfs nodes are root-owned.
+#
+# Separate from 010_poweroff so a mistake here cannot take away the ability to
+# shut the device down.
+#
+# Only this one wrapper is permitted, not a general write to sysfs, and the
+# wrapper accepts a fixed set of state names.
+
+walker ALL=(ALL) NOPASSWD: /usr/local/bin/journal-led

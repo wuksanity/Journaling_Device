@@ -435,6 +435,102 @@ class ConsoleFont(unittest.TestCase):
         journal.apply_font({})
 
 
+class LedSignalling(unittest.TestCase):
+    """The LED is the only feedback channel when no display is attached, so
+    what it is asked to do matters, and it must never touch the keystroke path."""
+
+    def capture(self, fn, dev=False):
+        """Run fn with DEV forced off, recording what would be executed."""
+        calls = []
+        real_run, real_dev = journal.subprocess.run, journal.DEV
+        journal.subprocess.run = lambda *a, **k: calls.append(a[0])
+        journal.DEV = dev
+        try:
+            fn()
+        finally:
+            journal.subprocess.run = real_run
+            journal.DEV = real_dev
+        return calls
+
+    def on(self, mode="state"):
+        c = dict(journal.DEFAULTS)
+        c["led"] = mode
+        return c
+
+    def test_default_is_off(self):
+        self.assertEqual(journal.DEFAULTS["led"], "off")
+        self.assertIn(journal.DEFAULTS["led"], journal.LEDS)
+
+    def test_nothing_runs_when_the_setting_is_off(self):
+        calls = self.capture(lambda: journal.led(dict(journal.DEFAULTS), "write"))
+        self.assertEqual(calls, [])
+
+    def test_nothing_runs_under_dev(self):
+        # Local development must not shell out to the device helper.
+        calls = self.capture(lambda: journal.led(self.on(), "write"), dev=True)
+        self.assertEqual(calls, [])
+
+    def test_state_is_passed_to_the_helper(self):
+        calls = self.capture(lambda: journal.led(self.on(), "write"))
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][-1], "write")
+        self.assertIn(journal.LED_HELPER, calls[0])
+        self.assertEqual(calls[0][:2], ["sudo", "-n"])
+
+    def test_compass_passes_two_arguments(self):
+        calls = self.capture(lambda: journal.compass(self.on(), "browse"))
+        self.assertEqual(calls[0][-2:], ["compass", "browse"])
+
+    def test_every_screen_has_a_compass_name(self):
+        for where in ("write", "menu", "browse", "read", "settings"):
+            calls = self.capture(lambda w=where: journal.compass(self.on(), w))
+            self.assertEqual(calls[0][-1], where)
+
+
+class CompassKey(unittest.TestCase):
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self._real = journal.JOURNAL_DIR
+        journal.JOURNAL_DIR = self.dir
+
+    def tearDown(self):
+        journal.JOURNAL_DIR = self._real
+        shutil.rmtree(self.dir, ignore_errors=True)
+
+    def test_ctrl_l_does_not_insert_a_character_while_writing(self):
+        # The whole reason it is ^L and not "l": this is a writing surface.
+        scr = FakeScr(keys=["a", "\x0c", "b", "\x18"])
+        journal.write_mode(scr, dict(journal.DEFAULTS))
+        written = journal.read_file(journal.today_path())
+        self.assertEqual(written, "ab", "^L must not land in the document")
+
+    def test_plain_l_is_still_a_letter_while_writing(self):
+        scr = FakeScr(keys=list("hello") + ["\x18"])
+        journal.write_mode(scr, dict(journal.DEFAULTS))
+        self.assertEqual(journal.read_file(journal.today_path()), "hello")
+
+    def test_l_in_the_menu_does_not_choose_anything(self):
+        # It must blink and keep waiting, not fall through to a selection.
+        scr = FakeScr(keys=["l", "l", "\n"])
+        self.assertEqual(journal.menu(scr, dict(journal.DEFAULTS)), "Write")
+
+    def test_l_in_browse_does_not_open_or_exit(self):
+        for name in ("2026-01-01.md", "2026-01-02.md"):
+            with open(os.path.join(self.dir, name), "w") as f:
+                f.write("body")
+        scr = FakeScr(keys=["l", curses.KEY_DOWN, "q"])
+        journal.browse(scr, dict(journal.DEFAULTS))
+        rev = scr.reversed_rows()
+        self.assertEqual(len(rev), 1)
+        self.assertIn("2026-01-01", rev[0][1])
+
+    def test_write_mode_hint_mentions_the_key(self):
+        scr = FakeScr(keys=["\x18"])
+        journal.write_mode(scr, dict(journal.DEFAULTS))
+        text = " ".join(s for y, x, s, attr in scr.drawn)
+        self.assertIn("^L", text)
+
+
 class Menu(unittest.TestCase):
     def _choose(self, index):
         scr = FakeScr(keys=[curses.KEY_DOWN] * index + ["\n"])
